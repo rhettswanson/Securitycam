@@ -2,52 +2,53 @@ import '@matterport/webcomponent';
 
 /* ========================= Config ========================= */
 const CFG = {
-  /* Mount position (cafeteria camera) */
+  // Cafeteria cam position & optics
   position: { x: 45.259, y: 4.0, z: -9.45 },
 
-  /* Optics */
   aspect: 16 / 9,
   hFovDeg: 32,
   near: 0.12,
   far: 19,
   nearApertureScale: 0.22,
 
-  /* Motion */
+  // Cafeteria sweep motion
   sweepDeg: 122,
   baseYawDeg: 93,
   tiltDeg: 10,
   yawSpeedDeg: 14,
 
-  /* FOV styling */
+  // FOV styling
   fovColor: 0x00ff00,
   fillOpacity: 0.08,
   edgeRadius: 0.016,
   baseEdgeRadius: 0.010,
 
-  /* Projector */
+  // Projector
   floorY: 0.4,
   footprintOpacity: 0.18,
   projectorGrid: { u: 20, v: 12 },
 
-  /* Stylized camera colors */
-  camTop: 0xbfe6f0,
-  camBottom: 0xeeeeee,
-  camStripe: 0xf59e0b,
+  // Stylized body colors
   camText: '#f59e0b',
   camWhite: 0xffffff,
   cableBlack: 0x111111,
 };
 
-/* ---------------- Gate settings ---------------- */
 const DEBUG = true;
-const BOUND_ROOM_ID = 'cdz3fkt38kae7tapstpt0eaeb';  // cafeteria
-const USE_SWEEP_GATE = true;     // use sweep.roomInfo.id when available
-const USE_ROOM_GATE  = true;     // also use Room.current
-const SHOW_IN_FLOORPLAN = true;  // allow in floorplan
-const USE_DISTANCE_GATE = true;
-const MAX_DISTANCE_M = 25;       // tighten so you can't see it across the school
-const USE_LOS_GATE = true;       // occlude if a wall is in the way
 
+// --- Cafeteria gating (you can relax these if you like) ---
+const BOUND_ROOM_ID = 'cdz3fkt38kae7tapstpt0eaeb';  // cafeteria
+const USE_SWEEP_GATE = true;
+const USE_ROOM_GATE  = true;
+const SHOW_IN_FLOORPLAN = true;
+
+// Match your outdoor camera tags (screenshots show labels like “Security Camera 1600 BLDG …”)
+const OUTDOOR_TAG_MATCH = /^\s*security\s*camera\b/i;
+
+// Camera registry (cafeteria + any outdoor rigs)
+const rigs = new Map(); // id -> { id, label, type, cfg, refs, rebuild, applyTilt }
+
+function registerRig(entry) { rigs.set(entry.id, entry); }
 const log = (...a) => { if (DEBUG) console.log('[SECAM]', ...a); };
 
 const deg2rad = d => d * Math.PI / 180;
@@ -74,8 +75,8 @@ function tubeBetween(THREE, a, b, radius, material) {
 function buildTruncatedFrustum(THREE, cfg) {
   const near = Math.max(0.01, cfg.near);
   const far = Math.max(near + 0.01, cfg.far);
-  const n = frustumDims(THREE, cfg.hFovDeg, cfg.aspect, near);
-  const f = frustumDims(THREE, cfg.hFovDeg, cfg.aspect, far);
+  const n = frustumDims(THREE, cfg.hFovDeg, cfg.aspect ?? 16/9, near);
+  const f = frustumDims(THREE, cfg.hFovDeg, cfg.aspect ?? 16/9, far);
 
   const s = THREE.MathUtils.clamp(cfg.nearApertureScale ?? 1, 0.05, 1);
   const nHalfW = n.halfW * s, nHalfH = n.halfH * s;
@@ -93,24 +94,24 @@ function buildTruncatedFrustum(THREE, cfg) {
   const f3 = new THREE.Vector3(-f.halfW,  f.halfH, -far);
 
   const edgeMat = new THREE.MeshBasicMaterial({
-    color: cfg.fovColor, transparent: true, opacity: 0.95,
+    color: cfg.fovColor ?? 0x00ff00, transparent: true, opacity: 0.95,
     depthTest: true, depthWrite: false
   });
 
-  group.add(tubeBetween(THREE, n0, f0, cfg.edgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, n1, f1, cfg.edgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, n2, f2, cfg.edgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, n3, f3, cfg.edgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n0, f0, cfg.edgeRadius ?? 0.016, edgeMat));
+  group.add(tubeBetween(THREE, n1, f1, cfg.edgeRadius ?? 0.016, edgeMat));
+  group.add(tubeBetween(THREE, n2, f2, cfg.edgeRadius ?? 0.016, edgeMat));
+  group.add(tubeBetween(THREE, n3, f3, cfg.edgeRadius ?? 0.016, edgeMat));
 
-  group.add(tubeBetween(THREE, n0, n1, cfg.baseEdgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, n1, n2, cfg.baseEdgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, n2, n3, cfg.baseEdgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, n3, n0, cfg.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n0, n1, cfg.baseEdgeRadius ?? 0.010, edgeMat));
+  group.add(tubeBetween(THREE, n1, n2, cfg.baseEdgeRadius ?? 0.010, edgeMat));
+  group.add(tubeBetween(THREE, n2, n3, cfg.baseEdgeRadius ?? 0.010, edgeMat));
+  group.add(tubeBetween(THREE, n3, n0, cfg.baseEdgeRadius ?? 0.010, edgeMat));
 
-  group.add(tubeBetween(THREE, f0, f1, cfg.baseEdgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, f1, f2, cfg.baseEdgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, f2, f3, cfg.baseEdgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, f3, f0, cfg.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, f0, f1, cfg.baseEdgeRadius ?? 0.010, edgeMat));
+  group.add(tubeBetween(THREE, f1, f2, cfg.baseEdgeRadius ?? 0.010, edgeMat));
+  group.add(tubeBetween(THREE, f2, f3, cfg.baseEdgeRadius ?? 0.010, edgeMat));
+  group.add(tubeBetween(THREE, f3, f0, cfg.baseEdgeRadius ?? 0.010, edgeMat));
 
   const pos = [];
   const quads = [[n0,n1,f1,f0],[n1,n2,f2,f1],[n2,n3,f3,f2],[n3,n0,f0,f3]];
@@ -125,7 +126,7 @@ function buildTruncatedFrustum(THREE, cfg) {
   faces.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   faces.computeVertexNormals();
   const fillMat = new THREE.MeshBasicMaterial({
-    color: cfg.fovColor, transparent: true, opacity: cfg.fillOpacity,
+    color: cfg.fovColor ?? 0x00ff00, transparent: true, opacity: cfg.fillOpacity ?? 0.08,
     side: THREE.DoubleSide, depthTest: true, depthWrite: false
   });
   const mesh = new THREE.Mesh(faces, fillMat);
@@ -135,7 +136,7 @@ function buildTruncatedFrustum(THREE, cfg) {
   return group;
 }
 
-/* ================== Stylized camera body ================== */
+/* ============ Stylized camera body (cafeteria) ============ */
 function makeSideDecalTexture(THREE) {
   const w = 512, h = 256;
   const c = document.createElement('canvas'); c.width = w; c.height = h;
@@ -178,7 +179,8 @@ function buildStylizedCamera(THREE) {
   g.add(quad(new THREE.Vector3(wBack/2,-hBack/2,zB),   new THREE.Vector3(wBack/2,hBack/2,zB),
              new THREE.Vector3(wFront/2,hFront/2,zF),  new THREE.Vector3(wFront/2,-hFront/2,zF), mWhite));
 
-  { // decal side with UVs
+  // left decal
+  {
     const a = new THREE.Vector3(-wBack/2,-hBack/2, zB);
     const b = new THREE.Vector3(-wBack/2, hBack/2, zB);
     const c = new THREE.Vector3(-wFront/2, hFront/2, zF);
@@ -191,6 +193,7 @@ function buildStylizedCamera(THREE) {
     geom.computeVertexNormals(); g.add(new THREE.Mesh(geom, mDecal));
   }
 
+  // small details
   const lip = new THREE.Mesh(new THREE.BoxGeometry((wBack+wFront)/2*0.98, 0.014, L*0.88),
                              new THREE.MeshLambertMaterial({ color: 0xffffff }));
   lip.position.y = -Math.min(hBack,hFront)*0.40; lip.position.z = -L*0.05; g.add(lip);
@@ -211,6 +214,7 @@ function buildStylizedCamera(THREE) {
                               new THREE.MeshBasicMaterial({ color: 0x66ff66, transparent:true, opacity:0.28 }));
   glow.position.z = zF - 0.028; g.add(glow);
 
+  // arm + mount
   const white = new THREE.MeshLambertMaterial({ color: CFG.camWhite });
   const hinge = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.06), white);
   hinge.position.set(0, -hBack*0.60, -L*0.12); g.add(hinge);
@@ -227,6 +231,7 @@ function buildStylizedCamera(THREE) {
   const base = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.012, 24), white);
   base.position.set(0.20, -hBack*1.40, -L*0.08); g.add(base);
 
+  // cable
   const curve = new THREE.QuadraticBezierCurve3(
     new THREE.Vector3(0.00, -hBack*0.30, -L*0.12),
     new THREE.Vector3(0.08, -hBack*0.95, -L*0.14),
@@ -239,83 +244,153 @@ function buildStylizedCamera(THREE) {
   return g;
 }
 
+/* =========== FOV-only rig (for outdoor cameras) =========== */
+function makeFovOnlyRig(THREE, sceneObject, cfg, color = CFG.fovColor) {
+  const node = sceneObject.addNode();
+  node.obj3D.visible = false;
+
+  const pan = new THREE.Object3D();
+  const tilt = new THREE.Object3D();
+  pan.add(tilt); node.obj3D.add(pan);
+
+  node.obj3D.position.set(cfg.position.x, cfg.position.y, cfg.position.z);
+  pan.rotation.y  = deg2rad(cfg.yawDeg ?? 0);
+  tilt.rotation.x = -deg2rad(cfg.tiltDeg ?? 10);
+
+  const frustum = buildTruncatedFrustum(THREE, { ...CFG, ...cfg, fovColor: color });
+  tilt.add(frustum);
+
+  // projector
+  const u = 20, v = 12, tris = (u-1)*(v-1)*2;
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(tris*9), 3));
+  const mat = new THREE.MeshBasicMaterial({ color, transparent:true, opacity: CFG.footprintOpacity, side: THREE.DoubleSide, depthTest:true, depthWrite:false });
+  const projector = new THREE.Mesh(geom, mat);
+  node.obj3D.add(projector);
+
+  return { node, pan, tilt, frustum, projector, projectorU: u, projectorV: v };
+}
+
 /* ============================= UI ============================= */
-function makePanel() {
-  const id = 'fov-panel';
-  document.getElementById(id)?.remove();
+function makePanel(selectedId = 'cafeteria') {
+  document.getElementById('fov-panel')?.remove();
 
   const wrap = document.createElement('div');
-  wrap.id = id;
+  wrap.id = 'fov-panel';
   wrap.style.cssText =
     'position:fixed;right:12px;bottom:12px;z-index:2147483647;background:rgba(0,0,0,.68);' +
-    'color:#fff;padding:12px;border-radius:12px;font:14px/1.15 system-ui,Arial;width:220px;' +
-    'box-shadow:0 6px 18px rgba(0,0,0,.35);user-select:none;pointer-events:auto;';
-  wrap.innerHTML = `<div style="font-weight:700;margin-bottom:10px;text-align:center;">Camera FOV Controls</div>`;
+    'color:#fff;padding:12px;border-radius:12px;font:14px/1.15 system-ui,Arial;width:240px;box-shadow:0 6px 18px rgba(0,0,0,.35);';
+  document.body.appendChild(wrap);
+
+  const title = document.createElement('div');
+  title.style.cssText='font-weight:700;margin-bottom:8px;text-align:center;';
+  title.textContent='Camera FOV Controls';
+  wrap.appendChild(title);
+
+  // Camera picker
+  const pick = document.createElement('select');
+  pick.style.cssText='width:100%;margin:0 0 8px 0;padding:6px;border-radius:8px;border:none;';
+  for (const r of rigs.values()) {
+    const o = document.createElement('option');
+    o.value = r.id; o.textContent = r.label || r.id;
+    if (r.id === selectedId) o.selected = true;
+    pick.appendChild(o);
+  }
+  wrap.appendChild(pick);
+
   const grid = document.createElement('div');
   grid.style.cssText = 'display:grid;grid-template-columns:1fr auto auto;gap:8px;';
   wrap.appendChild(grid);
 
-  function row(label, get, set, step, unit, min, max, decimals=0) {
-    const name = document.createElement('div'); name.textContent = label; name.style.cssText='align-self:center;';
-    const mk=(t,d)=>{const b=document.createElement('button');b.textContent=t;b.style.cssText='background:#14b8a6;border:none;color:#001;font-weight:800;border-radius:10px;padding:10px 12px;cursor:pointer;';
-      const act=(e)=>{e.preventDefault();const v=Math.max(min,Math.min(max,+(get()+d).toFixed(decimals)));set(v);val.textContent=`${get().toFixed(decimals)}${unit}`;};
-      b.addEventListener('click',act,{passive:false});b.addEventListener('touchstart',act,{passive:false});return b;};
-    const minus=mk('−',-step), plus=mk('+',step);
-    const val=document.createElement('div'); val.style.cssText='grid-column:1 / span 3;text-align:center;font-weight:700;'; val.textContent=`${get().toFixed(decimals)}${unit}`;
-    grid.appendChild(name); grid.appendChild(minus); grid.appendChild(plus); grid.appendChild(val);
+  const valLine = (text) => {
+    const d = document.createElement('div');
+    d.textContent = text;
+    d.style.cssText='grid-column:1 / span 3;text-align:center;font-weight:700;';
+    grid.appendChild(d);
+    return d;
+  };
+
+  function mountControls(rig) {
+    grid.innerHTML = '';
+    const { cfg, type, refs } = rig;
+
+    const row = (label, get, set, step, unit, min, max, decimals=0) => {
+      const name = document.createElement('div'); name.textContent=label; name.style.cssText='align-self:center;';
+      const mk=(txt,delta)=>{const b=document.createElement('button');b.textContent=txt;
+        b.style.cssText='background:#14b8a6;border:none;color:#001;font-weight:800;border-radius:10px;padding:8px 10px;cursor:pointer;';
+        b.onclick=(e)=>{e.preventDefault(); const v=Math.max(min,Math.min(max,+(get()+delta).toFixed(decimals))); set(v); val.textContent=`${get().toFixed(decimals)}${unit}`;};
+        return b;};
+      const minus=mk('−',-step), plus=mk('+',step);
+      const val = valLine(`${get().toFixed(decimals)}${unit}`);
+      grid.appendChild(name); grid.appendChild(minus); grid.appendChild(plus);
+    };
+
+    row('HFOV',  ()=>cfg.hFovDeg, v=>{cfg.hFovDeg=v; rig.rebuild();}, 1,'°',10,120);
+    row('NEAR',  ()=>cfg.near,    v=>{cfg.near=v;    rig.rebuild();}, 0.01,'',0.02,1,2);
+    row('FAR',   ()=>cfg.far,     v=>{cfg.far=v;     rig.rebuild();}, 1,'',5,120);
+
+    if (type === 'indoor') { // cafeteria
+      row('SWEEP', ()=>CFG.sweepDeg, v=>{CFG.sweepDeg=v;}, 2,'°',10,170);
+      row('YAW',   ()=>CFG.baseYawDeg, v=>{ CFG.baseYawDeg=v; }, 1,'°',-180,180);
+      row('TILT',  ()=>CFG.tiltDeg,    v=>{ CFG.tiltDeg=v; rig.applyTilt(); }, 1,'°',0,85);
+      row('MaxDist', ()=>cfg.maxDistanceM ?? 25, v=>{ cfg.maxDistanceM=v; }, 1,'m',5,80);
+    } else { // outdoor
+      row('YAW',   ()=>cfg.yawDeg, v=>{ cfg.yawDeg=v; refs.pan.rotation.y = deg2rad(v); }, 1,'°',-180,180);
+      row('TILT',  ()=>cfg.tiltDeg, v=>{ cfg.tiltDeg=v; rig.applyTilt(); }, 1,'°',0,85);
+      row('MaxDist', ()=>cfg.maxDistanceM ?? 35, v=>{ cfg.maxDistanceM=v; }, 1,'m',5,100);
+    }
   }
 
-  const footer=document.createElement('div'); footer.style.cssText='display:flex;gap:8px;margin-top:10px;';
-  const reset=document.createElement('button'); reset.textContent='Reset'; reset.style.cssText='flex:1;background:#f59e0b;border:none;border-radius:10px;padding:10px;color:#111;font-weight:800;';
-  const hide=document.createElement('button'); hide.textContent='Hide'; hide.style.cssText='flex:1;background:#64748b;border:none;border-radius:10px;padding:10px;color:#fff;font-weight:800;';
-  footer.appendChild(reset); footer.appendChild(hide); wrap.appendChild(footer); document.body.appendChild(wrap);
+  let current = rigs.get(selectedId) || Array.from(rigs.values())[0];
+  mountControls(current);
+  pick.onchange = () => { current = rigs.get(pick.value); mountControls(current); };
 
-  return { wrap, grid, row, reset, hide };
+  // footer
+  const footer=document.createElement('div'); footer.style.cssText='display:flex;gap:8px;margin-top:10px;';
+  const hide=document.createElement('button'); hide.textContent='Hide'; hide.style.cssText='flex:1;background:#64748b;border:none;border-radius:10px;padding:10px;color:#fff;font-weight:800;';
+  hide.onclick=(e)=>{e.preventDefault(); wrap.style.display = (wrap.style.display==='none')?'block':'none'; };
+  footer.appendChild(hide); wrap.appendChild(footer);
+
+  return { wrap, pick };
 }
 
 /* ============================ Main ============================ */
 const main = async () => {
   const viewer = document.querySelector('matterport-viewer');
+  // GH Pages subpath safety
+  viewer?.setAttribute('asset-base', '/Securitycam/');
+
   const mpSdk = await viewer.playingPromise;
   const THREE = window.THREE;
 
   await mpSdk.Mode.moveTo(mpSdk.Mode.Mode.INSIDE);
 
   const [sceneObject] = await mpSdk.Scene.createObjects(1);
-  const node = sceneObject.addNode();
+  const rootNode = sceneObject.addNode();
+  rootNode.obj3D.visible = false; // default hidden until gates allow
 
-  // default HIDDEN until the gates pass
-  node.obj3D.visible = false;
-
-  // simple lights for the model camera
+  // scene lights (for stylized body)
   const hemi = new THREE.HemisphereLight(0xffffff, 0x222233, 0.6);
   const dir  = new THREE.DirectionalLight(0xffffff, 0.5);
   dir.position.set(1, 2, 1);
-  node.obj3D.add(hemi, dir);
+  rootNode.obj3D.add(hemi, dir);
 
-  // rig
+  /* -------- Cafeteria rig (stylized) -------- */
   const panPivot  = new THREE.Object3D();
   const tiltPivot = new THREE.Object3D();
-  panPivot.add(tiltPivot); node.obj3D.add(panPivot);
+  panPivot.add(tiltPivot); rootNode.obj3D.add(panPivot);
+  rootNode.obj3D.position.set(CFG.position.x, CFG.position.y, CFG.position.z);
 
-  node.obj3D.position.set(CFG.position.x, CFG.position.y, CFG.position.z);
-
-  // camera head + frustum cam
   const head = buildStylizedCamera(THREE);
   tiltPivot.add(head);
-
-  const dimsFar = frustumDims(THREE, CFG.hFovDeg, CFG.aspect, CFG.far);
-  const vFovDeg = THREE.MathUtils.radToDeg(2 * Math.atan(dimsFar.halfH / CFG.far));
-  const cam = new THREE.PerspectiveCamera(vFovDeg, CFG.aspect, Math.max(0.01, CFG.near), CFG.far);
-  cam.position.set(0,0,0);
-  cam.lookAt(new THREE.Vector3(0,0,-1));
-  tiltPivot.add(cam);
-  tiltPivot.userData.frustumCam = cam;
 
   let frustumGroup = buildTruncatedFrustum(THREE, CFG);
   tiltPivot.add(frustumGroup);
 
-  // projector
+  const applyTilt = () => { tiltPivot.rotation.x = -deg2rad(CFG.tiltDeg); };
+  applyTilt();
+
+  // projector for cafeteria rig
   const projector = {
     u: CFG.projectorGrid.u, v: CFG.projectorGrid.v,
     geom: new THREE.BufferGeometry(),
@@ -330,113 +405,155 @@ const main = async () => {
     const tris  = (u-1)*(v-1)*2;
     projector.geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(tris*9), 3));
     projector.mesh = new THREE.Mesh(projector.geom, projector.mat);
-    node.obj3D.add(projector.mesh);
+    rootNode.obj3D.add(projector.mesh);
   })();
 
-  const applyTilt = () => { tiltPivot.rotation.x = -deg2rad(CFG.tiltDeg); };
-  applyTilt();
-  node.start();
+  // register cafeteria rig (per-camera config lives here)
+  const cafeteriaCfg = { hFovDeg: CFG.hFovDeg, near: CFG.near, far: CFG.far, maxDistanceM: 25 };
+  registerRig({
+    id: 'cafeteria',
+    label: 'Cafeteria Cam',
+    type: 'indoor',
+    cfg: cafeteriaCfg,
+    refs: { panPivot, tiltPivot, frustum: () => frustumGroup },
+    rebuild: () => {
+      tiltPivot.remove(frustumGroup);
+      frustumGroup.traverse?.(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+      Object.assign(CFG, { hFovDeg: cafeteriaCfg.hFovDeg, near: cafeteriaCfg.near, far: cafeteriaCfg.far });
+      frustumGroup = buildTruncatedFrustum(THREE, CFG);
+      tiltPivot.add(frustumGroup);
+      updateVisibility(); // re-eval gates
+    },
+    applyTilt: () => applyTilt(),
+  });
 
-  // viewer position & mode
+  /* -------- Outdoor rigs from Mattertags -------- */
+  const outdoorCams = [];
+  function pickNum(text, re, d) { const m = text?.match?.(re); return m ? parseFloat(m[1]) : d; }
+  function parseOutdoorCfgFromTag(tag) {
+    const txt = `${tag.label || ''}\n${tag.description || ''}`;
+    return {
+      position: { x: tag.anchorPosition.x, y: tag.anchorPosition.y, z: tag.anchorPosition.z },
+      hFovDeg: pickNum(txt, /\bhfov\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 32),
+      near:    pickNum(txt, /\bnear\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 0.12),
+      far:     pickNum(txt, /\bfar\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 22),
+      yawDeg:  pickNum(txt, /\byaw\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 0),
+      tiltDeg: pickNum(txt, /\btilt\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 10),
+      maxDistanceM: pickNum(txt, /\bmaxdist\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 35),
+      aspect: 16/9,
+    };
+  }
+
+  async function spawnOutdoorCamsFromTags() {
+    let tags = [];
+    try { tags = await mpSdk.Mattertag.getData(); } catch (e) { log('Mattertag.getData failed', e); return; }
+    const camTags = tags.filter(t => OUTDOOR_TAG_MATCH.test(t.label || ''));
+    for (const t of camTags) {
+      const cfg = parseOutdoorCfgFromTag(t);
+      const rig = makeFovOnlyRig(THREE, sceneObject, cfg, 0x00ff00);
+      outdoorCams.push({ ...rig, cfg, tagSid: t.sid, label: t.label });
+
+      registerRig({
+        id: t.sid || `out-${outdoorCams.length}`,
+        label: t.label || `Outdoor ${outdoorCams.length}`,
+        type: 'outdoor',
+        cfg,
+        refs: { pan: rig.pan, tilt: rig.tilt, frustum: () => rig.frustum, projector: rig.projector },
+        rebuild: () => {
+          const parent = rig.tilt;
+          parent.remove(rig.frustum);
+          rig.frustum.traverse?.(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+          rig.frustum = buildTruncatedFrustum(THREE, { ...CFG, ...cfg });
+          parent.add(rig.frustum);
+        },
+        applyTilt: () => { rig.tilt.rotation.x = -deg2rad(cfg.tiltDeg); },
+      });
+    }
+    log(`Spawned ${outdoorCams.length} outdoor FOV rig(s)`);
+  }
+  await spawnOutdoorCamsFromTags();
+
+  /* --------------- Visibility gates --------------- */
   let viewerPos = new THREE.Vector3();
-  // ---- NEW: throttle visibility checks on movement ----
   const scheduleVisCheck = (() => {
     let pending = false;
-    return () => {
-      if (pending) return;
-      pending = true;
-      setTimeout(() => { pending = false; updateVisibility(); }, 80);
-    };
+    return () => { if (pending) return; pending = true; setTimeout(() => { pending = false; updateVisibility(); }, 80); };
   })();
 
   mpSdk.Camera.pose.subscribe(p => {
     viewerPos.set(p.position.x, p.position.y, p.position.z);
-    scheduleVisCheck(); // <— re-evaluate gates whenever the user moves
+    scheduleVisCheck();
+    // update outdoor rigs on movement
+    outdoorCams.forEach(c => { updateOutdoorCamVisibility(c); });
   });
 
   let mode = mpSdk.Mode.Mode.INSIDE;
   mpSdk.Mode.current.subscribe(m => { mode = m; updateVisibility(); });
 
-  // room/sweep gating state
+  // robust Room.current handler to avoid "object is not iterable"
   let currentRooms = new Set();
-  let currentSweepRoomId = null;
-
-  // helpful logging
-  if (DEBUG) {
-    mpSdk.Room.data.subscribe(rooms => log('Rooms in model:', rooms));
-  }
-
-  mpSdk.Room.current.subscribe((ids) => {
-    currentRooms = new Set(ids || []);
-    log('Room.current IDs:', [...currentRooms]);
-    updateVisibility();
+  mpSdk.Room.current.subscribe((payload) => {
+    try {
+      const list =
+        Array.isArray(payload) ? payload :
+        (payload && typeof payload[Symbol.iterator] === 'function') ? Array.from(payload) :
+        (payload && Array.isArray(payload.ids)) ? payload.ids :
+        [];
+      currentRooms = new Set(list);
+      if (DEBUG) log('Room.current IDs:', [...currentRooms]);
+      updateVisibility();
+    } catch (err) {
+      console.warn('[SECAM] Room.current handler error', err, payload);
+    }
   });
 
+  let currentSweepRoomId = null;
   mpSdk.Sweep.current.subscribe((sw) => {
     currentSweepRoomId = sw?.roomInfo?.id || null;
-    log('Sweep.current room:', currentSweepRoomId, 'sweepId:', sw?.sid);
+    if (DEBUG) log('Sweep.current room:', currentSweepRoomId, 'sweepId:', sw?.sid);
     updateVisibility();
   });
 
   async function raycastFirst(origin, direction, maxDist) {
     try {
       if (typeof mpSdk.Scene.raycast === 'function') {
-        const hit = await mpSdk.Scene.raycast(
+        return await mpSdk.Scene.raycast(
           { x: origin.x, y: origin.y, z: origin.z },
           { x: direction.x, y: direction.y, z: direction.z },
           maxDist
         );
-        return hit;
       }
     } catch (_) {}
     return null;
   }
 
-  // visibility gate
-  let visTick = 0;
   async function updateVisibility() {
-    const tick = ++visTick;
-
-    // floorplan always allowed if desired
+    // Floorplan always allowed for cafeteria rig
     if (mode === mpSdk.Mode.Mode.FLOORPLAN && SHOW_IN_FLOORPLAN) {
-      node.obj3D.visible = true;
+      rootNode.obj3D.visible = true;
       return;
     }
 
     // room / sweep gating
     let inTargetRoom = true;
-
     if (USE_SWEEP_GATE && currentSweepRoomId) {
       inTargetRoom = (currentSweepRoomId === BOUND_ROOM_ID);
     } else if (USE_ROOM_GATE) {
       inTargetRoom = currentRooms.has(BOUND_ROOM_ID);
     }
+    if (!inTargetRoom) { rootNode.obj3D.visible = false; return; }
 
-    if (!inTargetRoom) {
-      if (DEBUG) log('VIS off: not in cafeteria room');
-      node.obj3D.visible = false;
-      return;
-    }
+    const camPos = rootNode.obj3D.getWorldPosition(new THREE.Vector3());
+    const dist = camPos.distanceTo(viewerPos);
+    const maxDist = rigs.get('cafeteria')?.cfg?.maxDistanceM ?? 25;
+    if (DEBUG) log('Distance to cam (m):', dist.toFixed(2));
+    if (dist > maxDist) { rootNode.obj3D.visible = false; return; }
 
-    // distance gate
-    if (USE_DISTANCE_GATE) {
-      const camPos = node.obj3D.getWorldPosition(new THREE.Vector3());
-      const dist = camPos.distanceTo(viewerPos);
-      if (DEBUG) log('Distance to cam (m):', dist.toFixed(2));
-      if (dist > MAX_DISTANCE_M) {
-        if (DEBUG) log('VIS off: beyond MAX_DISTANCE_M');
-        node.obj3D.visible = false;
-        return;
-      }
-    }
-
-    // line-of-sight gate
-    if (USE_LOS_GATE && frustumGroup?.userData?.farRect) {
-      const fr = frustumGroup.userData.farRect;
-      const centerLocal = new THREE.Vector3()
-        .add(fr[0]).add(fr[1]).add(fr[2]).add(fr[3]).multiplyScalar(0.25);
+    // LOS gate: aim at far-plane center
+    const fr = frustumGroup?.userData?.farRect;
+    if (fr) {
+      const centerLocal = new THREE.Vector3().add(fr[0]).add(fr[1]).add(fr[2]).add(fr[3]).multiplyScalar(0.25);
       const target = tiltPivot.localToWorld(centerLocal.clone());
-
       const dir = new THREE.Vector3().subVectors(target, viewerPos);
       const len = dir.length();
       if (len > 0.001) {
@@ -444,24 +561,16 @@ const main = async () => {
         const hit = await raycastFirst(viewerPos, dir, len);
         const hitDist = hit?.distance ?? Number.POSITIVE_INFINITY;
         const blocked = !!hit?.hit && hitDist < (len - 0.05);
-        if (tick !== visTick) return; // stale
         if (DEBUG) log('LOS blocked?', blocked, 'hitDist:', hitDist?.toFixed?.(2), 'len:', len.toFixed(2));
-        if (blocked) {
-          node.obj3D.visible = false;
-          return;
-        }
+        if (blocked) { rootNode.obj3D.visible = false; return; }
       }
     }
 
-    node.obj3D.visible = true;
+    rootNode.obj3D.visible = true;
   }
 
-  // projector update (skip when hidden)
-  let projectorFrame = 0;
   async function updateProjector() {
-    if (!node.obj3D.visible) { projector.mesh.visible = false; return; }
-    projectorFrame = (projectorFrame + 1) % 6;
-    if (projectorFrame !== 0) return;
+    if (!rootNode.obj3D.visible) { projector.mesh.visible = false; return; }
 
     const nearRect = frustumGroup.userData.nearRect;
     const farRect  = frustumGroup.userData.farRect;
@@ -489,16 +598,12 @@ const main = async () => {
       const len = dir.length(); dir.normalize();
 
       let hit = null;
-      try { hit = await mpSdk.Scene.raycast(
-        { x:nW.x, y:nW.y, z:nW.z },
-        { x:dir.x, y:dir.y, z:dir.z },
-        len
-      ); } catch(_){}
+      try { hit = await mpSdk.Scene.raycast({ x:nW.x, y:nW.y, z:nW.z }, { x:dir.x, y:dir.y, z:dir.z }, len); } catch(_){}
 
       if (hit?.hit) {
         worldPts[i] = new THREE.Vector3(hit.position.x, hit.position.y, hit.position.z);
       } else {
-        const t = (CFG.floorY - nW.y) / (fW.y - nW.y);
+        const t = ((CFG.floorY ?? 0) - nW.y) / (fW.y - nW.y);
         if (t < 0 || t > 1 || !Number.isFinite(t)) { projector.mesh.visible = false; return; }
         worldPts[i] = new THREE.Vector3().copy(nW).addScaledVector(new THREE.Vector3().subVectors(fW, nW), t);
       }
@@ -510,10 +615,10 @@ const main = async () => {
     for (let yi=0; yi<v-1; yi++){
       for (let xi=0; xi<u-1; xi++){
         const idx = yi*u + xi;
-        const p00 = node.obj3D.worldToLocal(worldPts[idx    ].clone());
-        const p10 = node.obj3D.worldToLocal(worldPts[idx + 1].clone());
-        const p01 = node.obj3D.worldToLocal(worldPts[idx + u].clone());
-        const p11 = node.obj3D.worldToLocal(worldPts[idx + u + 1].clone());
+        const p00 = rootNode.obj3D.worldToLocal(worldPts[idx    ].clone());
+        const p10 = rootNode.obj3D.worldToLocal(worldPts[idx + 1].clone());
+        const p01 = rootNode.obj3D.worldToLocal(worldPts[idx + u].clone());
+        const p11 = rootNode.obj3D.worldToLocal(worldPts[idx + u + 1].clone());
 
         const write = (p)=>{ arr[k++]=p.x; arr[k++]=p.y+0.003; arr[k++]=p.z; };
         write(p00); write(p10); write(p11);
@@ -524,11 +629,96 @@ const main = async () => {
     projector.geom.computeVertexNormals();
   }
 
-  // animate
+  async function updateOutdoorCamVisibility(rig) {
+    const camPos = rig.node.obj3D.getWorldPosition(new THREE.Vector3());
+    const dist = camPos.distanceTo(viewerPos);
+    const maxD = rig.cfg.maxDistanceM ?? 35;
+    if (dist > maxD) { rig.node.obj3D.visible = false; return; }
+
+    const fr = rig.frustum.userData.farRect;
+    const centerLocal = new THREE.Vector3().add(fr[0]).add(fr[1]).add(fr[2]).add(fr[3]).multiplyScalar(0.25);
+    const target = rig.tilt.localToWorld(centerLocal.clone());
+
+    const dir = new THREE.Vector3().subVectors(target, viewerPos);
+    const len = dir.length();
+    if (len <= 0.001) { rig.node.obj3D.visible = false; return; }
+    dir.normalize();
+
+    let hit = null;
+    try { hit = await mpSdk.Scene.raycast({ x: viewerPos.x, y: viewerPos.y, z: viewerPos.z }, { x: dir.x, y: dir.y, z: dir.z }, len); } catch (_){}
+
+    const hitDist = hit?.distance ?? Number.POSITIVE_INFINITY;
+    const blocked = !!hit?.hit && hitDist < (len - 0.05);
+    rig.node.obj3D.visible = !blocked;
+  }
+
+  async function updateOutdoorProjector(rig) {
+    if (!rig.node.obj3D.visible) { rig.projector.visible = false; return; }
+    const nearRect = rig.frustum.userData.nearRect;
+    const farRect  = rig.frustum.userData.farRect;
+    const u = rig.projectorU, v = rig.projectorV;
+
+    const nearGrid = [], farGrid = [];
+    for (let yi = 0; yi < v; yi++) {
+      const ty = yi / (v - 1);
+      const nA = new THREE.Vector3().lerpVectors(nearRect[0], nearRect[3], ty);
+      const nB = new THREE.Vector3().lerpVectors(nearRect[1], nearRect[2], ty);
+      const fA = new THREE.Vector3().lerpVectors(farRect[0],  farRect[3],  ty);
+      const fB = new THREE.Vector3().lerpVectors(farRect[1],  farRect[2],  ty);
+      for (let xi = 0; xi < u; xi++) {
+        const tx = xi / (u - 1);
+        nearGrid.push(new THREE.Vector3().lerpVectors(nA, nB, tx));
+        farGrid .push(new THREE.Vector3().lerpVectors(fA, fB, tx));
+      }
+    }
+
+    const worldPts = new Array(nearGrid.length);
+    for (let i = 0; i < nearGrid.length; i++) {
+      const nW = rig.tilt.localToWorld(nearGrid[i].clone());
+      const fW = rig.tilt.localToWorld(farGrid[i].clone());
+      const ray = new THREE.Vector3().subVectors(fW, nW);
+      const len = ray.length(); ray.normalize();
+
+      let hit = null;
+      try { hit = await mpSdk.Scene.raycast({ x:nW.x, y:nW.y, z:nW.z }, { x:ray.x, y:ray.y, z:ray.z }, len); } catch(_){}
+      if (hit?.hit) {
+        worldPts[i] = new THREE.Vector3(hit.position.x, hit.position.y, hit.position.z);
+      } else {
+        const floorY = CFG.floorY ?? 0.0;
+        const t = (floorY - nW.y) / (fW.y - nW.y);
+        if (t < 0 || t > 1 || !Number.isFinite(t)) { rig.projector.visible = false; return; }
+        worldPts[i] = new THREE.Vector3().copy(nW).addScaledVector(new THREE.Vector3().subVectors(fW, nW), t);
+      }
+    }
+
+    rig.projector.visible = true;
+    const arr = rig.projector.geometry.attributes.position.array;
+    let k = 0;
+    for (let yi=0; yi<v-1; yi++){
+      for (let xi=0; xi<u-1; xi++){
+        const idx = yi*u + xi;
+        const p00 = rig.node.obj3D.worldToLocal(worldPts[idx    ].clone());
+        const p10 = rig.node.obj3D.worldToLocal(worldPts[idx + 1].clone());
+        const p01 = rig.node.obj3D.worldToLocal(worldPts[idx + u].clone());
+        const p11 = rig.node.obj3D.worldToLocal(worldPts[idx + u + 1].clone());
+        const write = (p)=>{ arr[k++]=p.x; arr[k++]=p.y+0.003; arr[k++]=p.z; };
+        write(p00); write(p10); write(p11);
+        write(p00); write(p11); write(p01);
+      }
+    }
+    rig.projector.geometry.attributes.position.needsUpdate = true;
+    rig.projector.geometry.computeVertexNormals();
+  }
+
+  // start node (cafeteria)
+  rootNode.start();
+
+  // animate cafeteria sweep + projectors + periodic vis checks
   let phase = 0, last = performance.now();
   let visFrame = 0;
   async function animate(now) {
     const dt = (now - last)/1000; last = now;
+    // cafeteria pan sweep
     const yawCenter = deg2rad(CFG.baseYawDeg);
     const yawAmp    = deg2rad(CFG.sweepDeg)*0.5;
     const yawSpeed  = deg2rad(CFG.yawSpeedDeg);
@@ -536,64 +726,20 @@ const main = async () => {
     panPivot.rotation.y = yawCenter + Math.sin(phase)*yawAmp;
 
     await updateProjector();
+    for (const c of outdoorCams) await updateOutdoorProjector(c);
 
-    // also re-check gates periodically even if pose events are missed
-    if ((visFrame = (visFrame + 1) % 30) === 0) updateVisibility();
-
+    if ((visFrame = (visFrame + 1) % 30) === 0) {
+      updateVisibility();
+      outdoorCams.forEach(c => { updateOutdoorCamVisibility(c); });
+    }
     requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
 
-  function rebuildFrustum() {
-    tiltPivot.remove(frustumGroup);
-    frustumGroup.traverse?.(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
-    frustumGroup = buildTruncatedFrustum(THREE, CFG);
-    tiltPivot.add(frustumGroup);
+  // Panel (camera picker + per-rig controls)
+  makePanel('cafeteria');
 
-    const dimsFar2 = frustumDims(THREE, CFG.hFovDeg, CFG.aspect, CFG.far);
-    const cam = tiltPivot.userData.frustumCam;
-    if (cam) {
-      cam.fov   = THREE.MathUtils.radToDeg(2 * Math.atan(dimsFar2.halfH / CFG.far));
-      cam.aspect= CFG.aspect;
-      cam.near  = Math.max(0.01, CFG.near);
-      cam.far   = CFG.far;
-      cam.updateProjectionMatrix();
-    }
-    updateVisibility();
-  }
-
-  /* --------------------------- Controls --------------------------- */
-  const ui = makePanel();
-  const row = ui.row;
-  row('HFOV',     () => CFG.hFovDeg,           v => { CFG.hFovDeg=v;   rebuildFrustum(); }, 1,    '°', 10,120);
-  row('NEAR',     () => CFG.near,              v => { CFG.near=v;      rebuildFrustum(); }, 0.01, '',  0.02, 1, 2);
-  row('FAR',      () => CFG.far,               v => { CFG.far=v;       rebuildFrustum(); }, 1,    '',  5,120);
-  row('APERTURE', () => CFG.nearApertureScale, v => { CFG.nearApertureScale=v; rebuildFrustum(); }, 0.01, '', 0.05, 1, 2);
-  row('SWEEP',    () => CFG.sweepDeg,          v => { CFG.sweepDeg=v; }, 2,  '°', 10,170);
-  row('YAW',      () => CFG.baseYawDeg,        v => { CFG.baseYawDeg=v; }, 1, '°', -180,180);
-  row('TILT',     () => CFG.tiltDeg,           v => { CFG.tiltDeg=v; applyTilt(); }, 1, '°', 0,85);
-  row('HEIGHT',   () => node.obj3D.position.y, v => { node.obj3D.position.y=v; CFG.position.y=v; }, 0.1,'', -100,100,1);
-  row('FLOOR',    () => CFG.floorY ?? 0,       v => { CFG.floorY=v; }, 0.1,'', -100,100,1);
-
-  ui.reset.addEventListener('click', e => {
-    e.preventDefault();
-    Object.assign(CFG, {
-      position:{...CFG.position, y:4.0}, aspect:16/9, hFovDeg:32, near:0.12, far:19,
-      nearApertureScale:0.22, sweepDeg:122, baseYawDeg:93, tiltDeg:10, yawSpeedDeg:14,
-      fovColor:0x00ff00, fillOpacity:0.08, edgeRadius:0.016, baseEdgeRadius:0.010,
-      camTop:0xbfe6f0, camBottom:0xeeeeee, camStripe:0xf59e0b, camText:'#f59e0b', camWhite:0xffffff, cableBlack:0x111111,
-      floorY: 0.4, footprintOpacity:0.18, projectorGrid:{u:20,v:12},
-    });
-    node.obj3D.position.y = CFG.position.y;
-    rebuildFrustum(); applyTilt();
-  });
-
-  ui.hide.addEventListener('click', e => {
-    e.preventDefault();
-    ui.wrap.style.display = (ui.wrap.style.display==='none') ? 'block':'none';
-  });
-
-  // Kick a first visibility check once pose/mode arrive
+  // kick first vis check
   updateVisibility();
 };
 
