@@ -56,7 +56,6 @@ function tubeBetween(THREE, a, b, radius, material) {
   const up = new THREE.Vector3(0,1,0);
   mesh.quaternion.setFromUnitVectors(up, dir.clone().normalize());
   mesh.position.copy(a).addScaledVector(dir, 0.5);
-  // NOTE: no renderOrder override; depthTest handles occlusion now.
   return mesh;
 }
 
@@ -87,7 +86,6 @@ function buildTruncatedFrustum(THREE, cfg) {
   const f2 = new THREE.Vector3( f.halfW,  f.halfH, -far);
   const f3 = new THREE.Vector3(-f.halfW,  f.halfH, -far);
 
-  // ✅ depthTest ON, depthWrite OFF (good for translucent)
   const edgeMat = new THREE.MeshBasicMaterial({
     color: cfg.fovColor, transparent:true, opacity:0.95,
     depthTest:true, depthWrite:false
@@ -173,7 +171,6 @@ function buildStylizedCamera(THREE) {
   // Materials
   const mWhite = new THREE.MeshLambertMaterial({ color: 0xeeeeee });
   const mTop   = new THREE.MeshLambertMaterial({ color: 0xbfe6f0 });
-  const mBlue  = mTop;
   const mDecal = new THREE.MeshBasicMaterial({ map: makeSideDecalTexture(THREE) });
 
   // helper to build a quad
@@ -209,7 +206,7 @@ function buildStylizedCamera(THREE) {
     new THREE.Vector3( wBack/2, hBack/2, zB),
     new THREE.Vector3( wFront/2, hFront/2, zF),
     new THREE.Vector3(-wFront/2, hFront/2, zF),
-    mBlue
+    mTop
   ));
   group.add(quad(
     new THREE.Vector3(-wBack/2,-hBack/2, zB),
@@ -423,6 +420,77 @@ const main = async () => {
   applyTilt();
   node.start();
 
+  /* ------------------ VISIBILITY GATING (mode + LoS + distance + room) ------------------ */
+  const BOUND_ROOM_ID = 'cdz3fkt38kae7tapstpt0eaeb'; // your room id
+
+  const VIS = {
+    allowModes: new Set([mpSdk.Mode.Mode.INSIDE /*, mpSdk.Mode.Mode.FLOORPLAN*/]),
+    maxDistance: 40,       // meters
+    losIntervalMs: 240,
+    useRooms: true         // room gating enabled
+  };
+
+  let currentMode = mpSdk.Mode.current?.value ?? mpSdk.Mode.Mode.INSIDE;
+  let currentRooms = new Set();
+
+  mpSdk.Mode.current.subscribe(mode => { currentMode = mode; updateVisibility(); });
+
+  mpSdk.Room.current.subscribe(ids => {
+    console.log('Room.current IDs:', ids);
+    currentRooms = new Set(ids || []);
+    updateVisibility();
+  });
+
+  const rigWorld = new THREE.Vector3();
+
+  async function getViewerPosition() {
+    if (typeof mpSdk.Camera.getPosition === 'function') {
+      return mpSdk.Camera.getPosition();
+    }
+    const pose = mpSdk.Camera.pose?.value;
+    return pose?.position ?? null;
+  }
+
+  async function updateVisibility() {
+    // Mode gate
+    if (!VIS.allowModes.has(currentMode)) { node.obj3D.visible = false; return; }
+
+    // Room gate
+    if (VIS.useRooms) {
+      if (!currentRooms.has(BOUND_ROOM_ID)) { node.obj3D.visible = false; return; }
+    }
+
+    try {
+      const camPos = await getViewerPosition();
+      if (!camPos) { node.obj3D.visible = true; return; }
+
+      const viewer = new THREE.Vector3(camPos.x, camPos.y, camPos.z);
+      rigWorld.setFromMatrixPosition(node.obj3D.matrixWorld);
+
+      // Distance gate
+      const seg = new THREE.Vector3().subVectors(rigWorld, viewer);
+      const len = seg.length();
+      if (len > VIS.maxDistance) { node.obj3D.visible = false; return; }
+
+      // Line-of-sight gate
+      const dir = seg.clone().normalize();
+      const hit = await mpSdk.Scene.raycast(
+        { x: viewer.x, y: viewer.y, z: viewer.z },
+        { x: dir.x,    y: dir.y,    z: dir.z },
+        Math.max(0, len - 0.05)
+      );
+
+      const blocked = hit?.hit && (hit.distance ?? len) < (len - 0.05);
+      node.obj3D.visible = !blocked;
+    } catch {
+      node.obj3D.visible = true; // fail-open
+    }
+  }
+
+  setInterval(updateVisibility, VIS.losIntervalMs);
+  updateVisibility();
+  /* -------------------------------------------------------------------------------------- */
+
   async function raycastFirst(origin, direction, maxDist) {
     try {
       if (typeof mpSdk.Scene.raycast === 'function') {
@@ -546,7 +614,7 @@ const main = async () => {
   ui.row('SWEEP',    () => CFG.sweepDeg,          v => { CFG.sweepDeg=v; }, 2,  '°', 10,170);
   ui.row('YAW',      () => CFG.baseYawDeg,        v => { CFG.baseYawDeg=v; }, 1, '°', -180,180);
   ui.row('TILT',     () => CFG.tiltDeg,           v => { CFG.tiltDeg=v; applyTilt(); }, 1, '°', 0,85);
-  ui.row('HEIGHT',   () => node.obj3D.position.y, v => { node.obj3D.position.y=v; CFG.position.y=v; }, 0.1,'', -100,100,1);
+  ui.row('HEIGHT',   () => node.obj3D.position.y, v => { node.obj3D.position.y=v; CFG.position.y=v; updateVisibility(); }, 0.1,'', -100,100,1);
   ui.row('FLOOR',    () => CFG.floorY ?? 0,       v => { CFG.floorY=v; }, 0.1,'', -100,100,1);
 
   ui.reset.addEventListener('click', e => {
@@ -560,7 +628,7 @@ const main = async () => {
       floorY: 0.4, footprintOpacity:0.18, projectorGrid:{u:20,v:12},
     });
     node.obj3D.position.y = CFG.position.y;
-    rebuildFrustum(); applyTilt();
+    rebuildFrustum(); applyTilt(); updateVisibility();
   });
 
   ui.hide.addEventListener('click', e => {
