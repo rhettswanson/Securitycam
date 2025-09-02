@@ -86,9 +86,10 @@ function buildTruncatedFrustum(THREE, cfg) {
   const f2 = new THREE.Vector3( f.halfW,  f.halfH, -far);
   const f3 = new THREE.Vector3(-f.halfW,  f.halfH, -far);
 
+  // Depth ON so FOV is occluded by geometry
   const edgeMat = new THREE.MeshBasicMaterial({
     color: cfg.fovColor, transparent:true, opacity:0.95,
-    depthTest:true, depthWrite:false
+    depthTest:true, depthWrite:true
   });
 
   // four “rays”
@@ -126,7 +127,7 @@ function buildTruncatedFrustum(THREE, cfg) {
   faces.computeVertexNormals();
   const fillMat = new THREE.MeshBasicMaterial({
     color: cfg.fovColor, transparent:true, opacity: cfg.fillOpacity,
-    side: THREE.DoubleSide, depthTest:true, depthWrite:false
+    side: THREE.DoubleSide, depthTest:true, depthWrite:true
   });
   const mesh = new THREE.Mesh(faces, fillMat);
   group.add(mesh);
@@ -404,7 +405,7 @@ const main = async () => {
     geom: new THREE.BufferGeometry(),
     mat:  new THREE.MeshBasicMaterial({
       color: CFG.fovColor, transparent: true, opacity: CFG.footprintOpacity,
-      side: THREE.DoubleSide, depthTest:true, depthWrite:false
+      side: THREE.DoubleSide, depthTest:true, depthWrite:true
     }),
     mesh: null,
   };
@@ -420,14 +421,14 @@ const main = async () => {
   applyTilt();
   node.start();
 
-  /* ------------------ VISIBILITY GATING (mode + LoS + distance + room) ------------------ */
-  const BOUND_ROOM_ID = 'cdz3fkt38kae7tapstpt0eaeb'; // your room id
+  /* ------------------ VISIBILITY GATING (mode + room + LoS + distance) ------------------ */
+  const BOUND_ROOM_ID = 'cdz3fkt38kae7tapstpt0eaeb'; // cafeteria room
 
   const VIS = {
     allowModes: new Set([mpSdk.Mode.Mode.INSIDE /*, mpSdk.Mode.Mode.FLOORPLAN*/]),
-    maxDistance: 40,       // meters
-    losIntervalMs: 240,
-    useRooms: true         // room gating enabled
+    maxDistance: 18,      // meters (tighten to kill far-away visibility)
+    losIntervalMs: 240,   // LoS throttle
+    useRooms: true
   };
 
   let currentMode = mpSdk.Mode.current?.value ?? mpSdk.Mode.Mode.INSIDE;
@@ -436,6 +437,7 @@ const main = async () => {
   mpSdk.Mode.current.subscribe(mode => { currentMode = mode; updateVisibility(); });
 
   mpSdk.Room.current.subscribe(ids => {
+    // Helpful for debugging; you should see this when moving.
     console.log('Room.current IDs:', ids);
     currentRooms = new Set(ids || []);
     updateVisibility();
@@ -455,9 +457,9 @@ const main = async () => {
     // Mode gate
     if (!VIS.allowModes.has(currentMode)) { node.obj3D.visible = false; return; }
 
-    // Room gate
-    if (VIS.useRooms) {
-      if (!currentRooms.has(BOUND_ROOM_ID)) { node.obj3D.visible = false; return; }
+    // Room gate (presence in the set is enough; distance/LoS will tighten it)
+    if (VIS.useRooms && !currentRooms.has(BOUND_ROOM_ID)) {
+      node.obj3D.visible = false; return;
     }
 
     try {
@@ -483,7 +485,8 @@ const main = async () => {
       const blocked = hit?.hit && (hit.distance ?? len) < (len - 0.05);
       node.obj3D.visible = !blocked;
     } catch {
-      node.obj3D.visible = true; // fail-open
+      // Fail-open if raycast not available
+      node.obj3D.visible = true;
     }
   }
 
@@ -603,6 +606,8 @@ const main = async () => {
       cam.far   = CFG.far;
       cam.updateProjectionMatrix();
     }
+    // Visibility can change when optics move
+    updateVisibility();
   }
 
   /* --------------------------- Controls --------------------------- */
