@@ -56,7 +56,7 @@ function tubeBetween(THREE, a, b, radius, material) {
   const up = new THREE.Vector3(0,1,0);
   mesh.quaternion.setFromUnitVectors(up, dir.clone().normalize());
   mesh.position.copy(a).addScaledVector(dir, 0.5);
-  mesh.renderOrder = 10000;
+  // NOTE: no renderOrder override; depthTest handles occlusion now.
   return mesh;
 }
 
@@ -87,8 +87,10 @@ function buildTruncatedFrustum(THREE, cfg) {
   const f2 = new THREE.Vector3( f.halfW,  f.halfH, -far);
   const f3 = new THREE.Vector3(-f.halfW,  f.halfH, -far);
 
+  // ✅ depthTest ON, depthWrite OFF (good for translucent)
   const edgeMat = new THREE.MeshBasicMaterial({
-    color: cfg.fovColor, transparent:true, opacity:0.95, depthWrite:false, depthTest:false
+    color: cfg.fovColor, transparent:true, opacity:0.95,
+    depthTest:true, depthWrite:false
   });
 
   // four “rays”
@@ -126,10 +128,9 @@ function buildTruncatedFrustum(THREE, cfg) {
   faces.computeVertexNormals();
   const fillMat = new THREE.MeshBasicMaterial({
     color: cfg.fovColor, transparent:true, opacity: cfg.fillOpacity,
-    side: THREE.DoubleSide, depthWrite:false, depthTest:false
+    side: THREE.DoubleSide, depthTest:true, depthWrite:false
   });
   const mesh = new THREE.Mesh(faces, fillMat);
-  mesh.renderOrder = 10001;
   group.add(mesh);
 
   group.userData = { nearRect: [n0,n1,n2,n3], farRect: [f0,f1,f2,f3] };
@@ -406,7 +407,7 @@ const main = async () => {
     geom: new THREE.BufferGeometry(),
     mat:  new THREE.MeshBasicMaterial({
       color: CFG.fovColor, transparent: true, opacity: CFG.footprintOpacity,
-      side: THREE.DoubleSide, depthWrite: false, depthTest: false
+      side: THREE.DoubleSide, depthTest:true, depthWrite:false
     }),
     mesh: null,
   };
@@ -415,7 +416,6 @@ const main = async () => {
     const tris  = (u-1)*(v-1)*2;
     projector.geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(tris*9), 3));
     projector.mesh = new THREE.Mesh(projector.geom, projector.mat);
-    projector.mesh.renderOrder = 10002;
     node.obj3D.add(projector.mesh);
   })();
 
@@ -423,52 +423,6 @@ const main = async () => {
   applyTilt();
   node.start();
 
-  // -------- Console logger for room IDs (add-on) --------
-  mpSdk.Room.current.subscribe((roomIds) => {
-    console.log('Viewer is in room IDs:', roomIds);
-  });
-
-  // ---------- Visibility gating with Room & Mode ----------
-  const STORAGE_KEY = 'mp_camBoundRooms_v1';
-  let boundRooms = new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'));
-
-  let currentRooms = new Set();              // viewer’s current room ids
-  let currentMode  = mpSdk.Mode.Mode.INSIDE; // default
-
-  function updateVisibility() {
-    // Always show in FLOORPLAN
-    if (currentMode === mpSdk.Mode.Mode.FLOORPLAN) {
-      node.obj3D.visible = true;
-      return;
-    }
-    // Hide outside INSIDE unless you want otherwise
-    if (currentMode !== mpSdk.Mode.Mode.INSIDE) {
-      node.obj3D.visible = false;
-      return;
-    }
-    // INSIDE: no binding → visible everywhere; else only when rooms overlap
-    if (boundRooms.size === 0) {
-      node.obj3D.visible = true;
-      return;
-    }
-    let same = false;
-    for (const id of currentRooms) if (boundRooms.has(id)) { same = true; break; }
-    node.obj3D.visible = same;
-  }
-
-  mpSdk.Mode.current.subscribe(mode => { 
-    currentMode = mode; 
-    updateVisibility(); 
-  });
-
-  mpSdk.Room.current.subscribe(roomIds => { 
-    currentRooms = new Set(roomIds || []);
-    updateVisibility();
-  });
-
-  updateVisibility();
-
-  // ---------- raycast helper ----------
   async function raycastFirst(origin, direction, maxDist) {
     try {
       if (typeof mpSdk.Scene.raycast === 'function') {
@@ -490,10 +444,10 @@ const main = async () => {
     return null;
   }
 
-  // ---------- projector update ----------
   let projectorFrame = 0;
   async function updateProjector() {
-    projectorFrame = (projectorFrame + 1) % 6; // ~10fps
+    // throttle ~10 fps
+    projectorFrame = (projectorFrame + 1) % 6;
     if (projectorFrame !== 0) return;
 
     const nearRect = frustumGroup.userData.nearRect;
@@ -595,37 +549,6 @@ const main = async () => {
   ui.row('HEIGHT',   () => node.obj3D.position.y, v => { node.obj3D.position.y=v; CFG.position.y=v; }, 0.1,'', -100,100,1);
   ui.row('FLOOR',    () => CFG.floorY ?? 0,       v => { CFG.floorY=v; }, 0.1,'', -100,100,1);
 
-  // --- UI: Bind/Clear room gating ---
-  (function addBindControls(){
-    const bar = document.createElement('div');
-    bar.style.cssText = 'display:flex;gap:8px;margin-top:8px;';
-
-    const bindBtn  = document.createElement('button');
-    bindBtn.textContent = 'Bind room';
-    bindBtn.title = 'Bind camera visibility to your current room';
-    bindBtn.style.cssText = 'flex:1;background:#22c55e;border:none;border-radius:10px;padding:8px;color:#0b1;font-weight:800;cursor:pointer;';
-    bindBtn.onclick = () => {
-      const ids = Array.from(currentRooms);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
-      boundRooms = new Set(ids);
-      updateVisibility();
-    };
-
-    const clearBtn = document.createElement('button');
-    clearBtn.textContent = 'Clear';
-    clearBtn.title = 'Show camera in all rooms (until you bind again)';
-    clearBtn.style.cssText = 'flex:1;background:#ef4444;border:none;border-radius:10px;padding:8px;color:#fff;font-weight:800;cursor:pointer;';
-    clearBtn.onclick = () => {
-      localStorage.removeItem(STORAGE_KEY);
-      boundRooms.clear();
-      updateVisibility();
-    };
-
-    ui.wrap.insertBefore(bar, ui.wrap.lastElementChild);
-    bar.appendChild(bindBtn);
-    bar.appendChild(clearBtn);
-  })();
-
   ui.reset.addEventListener('click', e => {
     e.preventDefault();
     Object.assign(CFG, {
@@ -637,7 +560,7 @@ const main = async () => {
       floorY: 0.4, footprintOpacity:0.18, projectorGrid:{u:20,v:12},
     });
     node.obj3D.position.y = CFG.position.y;
-    rebuildFrustum(); applyTilt(); updateVisibility();
+    rebuildFrustum(); applyTilt();
   });
 
   ui.hide.addEventListener('click', e => {
