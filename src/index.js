@@ -36,8 +36,8 @@ const CFG = {
 
 const DEBUG = true;
 
-// --- Cafeteria gating ---
-const BOUND_ROOM_ID = 'cdz3fkt38kae7tapstpt0eaeb';  // cafeteria room id
+// Cafeteria gating
+const BOUND_ROOM_ID = 'cdz3fkt38kae7tapstpt0eaeb';
 const USE_SWEEP_GATE = true;
 const USE_ROOM_GATE  = true;
 const SHOW_IN_FLOORPLAN = true;
@@ -45,10 +45,9 @@ const SHOW_IN_FLOORPLAN = true;
 // Outdoor tag labels look like “Security Camera …”
 const OUTDOOR_TAG_MATCH = /^\s*security\s*camera\b/i;
 
-// Camera registry (cafeteria + outdoor)
+/* ================= Infrastructure ================= */
 const rigs = new Map(); // id -> { id, label, type, cfg, refs, rebuild, applyTilt }
 function registerRig(entry) { rigs.set(entry.id, entry); }
-
 const log = (...a) => { if (DEBUG) console.log('[SECAM]', ...a); };
 const deg2rad = d => d * Math.PI / 180;
 
@@ -58,7 +57,6 @@ function frustumDims(THREE, hFovDeg, aspect, dist) {
   const v = 2 * Math.atan(Math.tan(h / 2) / aspect);
   return { halfW: Math.tan(h / 2) * dist, halfH: Math.tan(v / 2) * dist, dist };
 }
-
 function tubeBetween(THREE, a, b, radius, material) {
   const dir = new THREE.Vector3().subVectors(b, a);
   const len = dir.length();
@@ -70,13 +68,11 @@ function tubeBetween(THREE, a, b, radius, material) {
   mesh.position.copy(a).addScaledVector(dir, 0.5);
   return mesh;
 }
-
 function buildTruncatedFrustum(THREE, cfg) {
   const near = Math.max(0.01, cfg.near);
   const far = Math.max(near + 0.01, cfg.far);
   const n = frustumDims(THREE, cfg.hFovDeg, cfg.aspect ?? 16/9, near);
   const f = frustumDims(THREE, cfg.hFovDeg, cfg.aspect ?? 16/9, far);
-
   const s = THREE.MathUtils.clamp(cfg.nearApertureScale ?? 1, 0.05, 1);
   const nHalfW = n.halfW * s, nHalfH = n.halfH * s;
 
@@ -149,12 +145,10 @@ function makeSideDecalTexture(THREE) {
   const tex = new THREE.CanvasTexture(c); tex.anisotropy = 8; tex.needsUpdate = true;
   return tex;
 }
-
 function buildStylizedCamera(THREE) {
   const g = new THREE.Group();
   const L = 0.44, wBack = 0.26, hBack = 0.16, wFront = 0.20, hFront = 0.13;
   const zF = -L/2, zB = L/2;
-
   const quad = (a,b,c,d,mat) => {
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array([
@@ -162,7 +156,6 @@ function buildStylizedCamera(THREE) {
     ]),3));
     geom.computeVertexNormals(); return new THREE.Mesh(geom, mat);
   };
-
   const mWhite = new THREE.MeshLambertMaterial({ color: 0xeeeeee });
   const mBlue  = new THREE.MeshLambertMaterial({ color: 0xbfe6f0 });
   const mDecal = new THREE.MeshBasicMaterial({ map: makeSideDecalTexture(THREE) });
@@ -356,7 +349,6 @@ function makePanel(selectedId = 'cafeteria') {
 /* ============================ Main ============================ */
 const main = async () => {
   const viewer = document.querySelector('matterport-viewer');
-  // GH Pages subpath safety — keep in HTML too
   viewer?.setAttribute('asset-base', '/Securitycam/');
 
   const mpSdk = await viewer.playingPromise;
@@ -366,9 +358,9 @@ const main = async () => {
 
   const [sceneObject] = await mpSdk.Scene.createObjects(1);
   const rootNode = sceneObject.addNode();
-  rootNode.obj3D.visible = false; // default hidden until gates allow
+  rootNode.obj3D.visible = false;
 
-  // scene lights (for stylized body)
+  // lights (for stylized body)
   const hemi = new THREE.HemisphereLight(0xffffff, 0x222233, 0.6);
   const dir  = new THREE.DirectionalLight(0xffffff, 0.5);
   dir.position.set(1, 2, 1);
@@ -426,7 +418,11 @@ const main = async () => {
     applyTilt: () => applyTilt(),
   });
 
-  /* -------- Outdoor rigs from Mattertags (Tag.data) -------- */
+  // Start cafeteria visuals & UI immediately (don’t block on tags)
+  rootNode.start();
+  makePanel('cafeteria');
+
+  /* -------- Outdoor rigs from Mattertags (robust) -------- */
   const outdoorCams = [];
 
   function pickNum(text, re, d) { const m = text?.match?.(re); return m ? parseFloat(m[1]) : d; }
@@ -444,24 +440,25 @@ const main = async () => {
     };
   }
 
-  async function getAllTags(mpSdk) {
-    // Preferred new API
+  async function getTagsWithTimeout(ms = 1500) {
+    // Try Tag.data first, but don't wait forever
     if (mpSdk.Tag?.data?.subscribe) {
-      return new Promise((resolve) => {
-        const unsub = mpSdk.Tag.data.subscribe((tags) => {
+      const tagDataPromise = new Promise(resolve => {
+        const unsub = mpSdk.Tag.data.subscribe(tags => {
           try {
             const arr = Array.isArray(tags)
               ? tags
               : (tags?.toArray?.() ?? Object.values(tags ?? {}));
             if (arr) { unsub?.(); resolve(arr); }
-          } catch {
-            unsub?.(); resolve([]);
-          }
+          } catch { unsub?.(); resolve([]); }
         });
       });
+      const timeout = new Promise(resolve => setTimeout(() => resolve(null), ms));
+      const viaNew = await Promise.race([tagDataPromise, timeout]);
+      if (viaNew) return viaNew;
     }
-    // Fallback (deprecated but still works)
-    return await mpSdk.Mattertag.getData();
+    // Fallback (deprecated)
+    try { return await mpSdk.Mattertag.getData(); } catch { return []; }
   }
 
   async function initOutdoorGround(rig) {
@@ -470,17 +467,15 @@ const main = async () => {
       const hit = await mpSdk.Scene.raycast(
         { x: origin.x, y: origin.y, z: origin.z },
         { x: 0, y: -1, z: 0 },
-        60 // look 60m downward just in case
+        60
       );
       rig.groundY = (hit?.hit ? hit.position.y : 0.0);
       if (DEBUG) log('Outdoor rig groundY:', rig.groundY);
-    } catch {
-      rig.groundY = 0.0;
-    }
+    } catch { rig.groundY = 0.0; }
   }
 
   async function spawnOutdoorCamsFromTags() {
-    const tags = await getAllTags(mpSdk);
+    const tags = await getTagsWithTimeout();
     const camTags = tags.filter(t => OUTDOOR_TAG_MATCH.test(t.label || ''));
     for (const t of camTags) {
       const cfg = parseOutdoorCfgFromTag(t);
@@ -506,9 +501,10 @@ const main = async () => {
     }
     log(`Spawned ${outdoorCams.length} outdoor FOV rig(s)`);
   }
-  await spawnOutdoorCamsFromTags();
+  // fire-and-forget; don't block UI
+  spawnOutdoorCamsFromTags().catch(e => console.warn('[SECAM] outdoor spawn error', e));
 
-  /* --------------- Visibility gates --------------- */
+  /* --------------- Visibility + projectors --------------- */
   let viewerPos = new THREE.Vector3();
   const scheduleVisCheck = (() => {
     let pending = false;
@@ -518,7 +514,8 @@ const main = async () => {
   mpSdk.Camera.pose.subscribe(p => {
     viewerPos.set(p.position.x, p.position.y, p.position.z);
     scheduleVisCheck();
-    outdoorCams.forEach(c => { updateOutdoorCamVisibility(c); });
+    // update outdoor rigs on movement
+    // (we'll still do periodic checks in the animation loop)
   });
 
   let mode = mpSdk.Mode.Mode.INSIDE;
@@ -562,9 +559,9 @@ const main = async () => {
   }
 
   async function updateVisibility() {
+    // Floorplan always allowed for cafeteria rig
     if (mode === mpSdk.Mode.Mode.FLOORPLAN && SHOW_IN_FLOORPLAN) {
-      rootNode.obj3D.visible = true;
-      return;
+      rootNode.obj3D.visible = true; return;
     }
 
     // room / sweep gating
@@ -582,7 +579,7 @@ const main = async () => {
     if (DEBUG) log('Distance to cam (m):', dist.toFixed(2));
     if (dist > maxDist) { rootNode.obj3D.visible = false; return; }
 
-    // LOS gate: far-plane center
+    // LOS gate: aim at far-plane center
     const fr = frustumGroup?.userData?.farRect;
     if (fr) {
       const centerLocal = new THREE.Vector3().add(fr[0]).add(fr[1]).add(fr[2]).add(fr[3]).multiplyScalar(0.25);
@@ -716,7 +713,6 @@ const main = async () => {
       if (hit?.hit) {
         worldPts[i] = new THREE.Vector3(hit.position.x, hit.position.y, hit.position.z);
       } else {
-        // Use per-rig ground height (robust outdoors)
         const floorY = (rig.groundY ?? 0.0);
         const t = (floorY - nW.y) / (fW.y - nW.y);
         if (t < 0 || t > 1 || !Number.isFinite(t)) { rig.projector.visible = false; return; }
@@ -743,9 +739,6 @@ const main = async () => {
     rig.projector.geometry.computeVertexNormals();
   }
 
-  // start cafeteria node
-  rootNode.start();
-
   // animate cafeteria sweep + all projectors + periodic vis checks
   let phase = 0, last = performance.now();
   let visFrame = 0;
@@ -760,18 +753,23 @@ const main = async () => {
     panPivot.rotation.y = yawCenter + Math.sin(phase)*yawAmp;
 
     await updateProjector();
-    for (const c of outdoorCams) await updateOutdoorProjector(c);
-
-    if ((visFrame = (visFrame + 1) % 30) === 0) {
-      updateVisibility();
-      outdoorCams.forEach(c => { updateOutdoorCamVisibility(c); });
+    for (const c of rigs.values()) {
+      if (c.type === 'outdoor' && c.refs?.projector?.geometry) {
+        const match = [...rigs.values()].find(r => r.id === c.id); // no-op, keeps linter quiet
+      }
     }
+    // update outdoor rigs
+    for (const oc of rigs.values()) {
+      if (oc.type === 'outdoor') {
+        await updateOutdoorProjector(oc.refs);
+        await updateOutdoorCamVisibility(oc.refs);
+      }
+    }
+
+    if ((visFrame = (visFrame + 1) % 30) === 0) updateVisibility();
     requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
-
-  // Panel (camera picker + per-rig controls)
-  makePanel('cafeteria');
 
   // kick first vis check
   updateVisibility();
