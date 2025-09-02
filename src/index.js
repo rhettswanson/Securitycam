@@ -1,0 +1,434 @@
+import '@matterport/webcomponent';
+
+/* ------------------------ Defaults you asked for ------------------------ */
+const CFG = {
+  // Mount position
+  position:   { x: 45.259, y: 4.0, z: -9.45 },   // HEIGHT = 4.0
+
+  // Optics
+  aspect:     16 / 9,
+  hFovDeg:    32,
+  near:       0.12,
+  far:        19,
+
+  // Motion
+  sweepDeg:   122,
+  baseYawDeg: 93,
+  tiltDeg:    10,
+  yawSpeedDeg: 14,    // slower pan
+
+  // FOV styling
+  fovColor:      0x00ff00,
+  fillOpacity:   0.08,
+  edgeRadius:    0.016,
+  baseEdgeRadius:0.010,
+
+  // Projected highlight / depth-aware grid
+  floorY: 0.4,                   // FLOOR = 0.4 (fixed)
+  footprintOpacity: 0.18,
+  projectorGrid: { u: 20, v: 12 },
+
+  // Stylized camera colors
+  camTop:     0xbfe6f0,  // pale blue
+  camBottom:  0xeeeeee,  // white-ish
+  camStripe:  0xf59e0b,  // orange
+  camText:    '#f59e0b', // canvas uses CSS color
+  camWhite:   0xffffff,  // bracket/arm
+  cableBlack: 0x111111,
+};
+
+const deg2rad = d => d * Math.PI/180;
+
+/* ---------- frustum helpers (near/far truncated frustum) ---------- */
+function frustumDims(THREE, hFovDeg, aspect, dist) {
+  const h = deg2rad(hFovDeg);
+  const v = 2 * Math.atan(Math.tan(h/2) / aspect);
+  return { halfW: Math.tan(h/2)*dist, halfH: Math.tan(v/2)*dist, dist };
+}
+
+function tubeBetween(THREE, a, b, radius, material) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  if (len <= 1e-6) return new THREE.Object3D();
+  const geom = new THREE.CylinderGeometry(radius, radius, len, 12, 1, true);
+  const mesh = new THREE.Mesh(geom, material);
+  const up = new THREE.Vector3(0,1,0);
+  mesh.quaternion.setFromUnitVectors(up, dir.clone().normalize());
+  mesh.position.copy(a).addScaledVector(dir, 0.5);
+  mesh.renderOrder = 10000;
+  return mesh;
+}
+
+/** Build a truncated frustum (near cap + far cap + side faces + tubes). */
+function buildTruncatedFrustum(THREE, cfg) {
+  const near = Math.max(0.01, cfg.near);
+  const far  = Math.max(near + 0.01, cfg.far);
+
+  const n = frustumDims(THREE, cfg.hFovDeg, cfg.aspect, near);
+  const f = frustumDims(THREE, cfg.hFovDeg, cfg.aspect, far);
+
+  const group = new THREE.Group();
+
+  const n0 = new THREE.Vector3(-n.halfW, -n.halfH, -near);
+  const n1 = new THREE.Vector3( n.halfW, -n.halfH, -near);
+  const n2 = new THREE.Vector3( n.halfW,  n.halfH, -near);
+  const n3 = new THREE.Vector3(-n.halfW,  n.halfH, -near);
+  const f0 = new THREE.Vector3(-f.halfW, -f.halfH, -far);
+  const f1 = new THREE.Vector3( f.halfW, -f.halfH, -far);
+  const f2 = new THREE.Vector3( f.halfW,  f.halfH, -far);
+  const f3 = new THREE.Vector3(-f.halfW,  f.halfH, -far);
+
+  const edgeMat = new THREE.MeshBasicMaterial({
+    color: cfg.fovColor, transparent:true, opacity:0.95, depthWrite:false, depthTest:false
+  });
+
+  // side tubes
+  group.add(tubeBetween(THREE, n0, f0, cfg.edgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n1, f1, cfg.edgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n2, f2, cfg.edgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n3, f3, cfg.edgeRadius, edgeMat));
+  // near/far rectangles
+  group.add(tubeBetween(THREE, n0, n1, cfg.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n1, n2, cfg.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n2, n3, cfg.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n3, n0, cfg.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, f0, f1, cfg.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, f1, f2, cfg.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, f2, f3, cfg.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, f3, f0, cfg.baseEdgeRadius, edgeMat));
+
+  // faces
+  const pos = [];
+  const quads = [
+    [n0,n1,f1,f0], [n1,n2,f2,f1], [n2,n3,f3,f2], [n3,n0,f0,f3]
+  ];
+  for (const [a,b,c,d] of quads) {
+    pos.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z);
+    pos.push(a.x,a.y,a.z, c.x,c.y,c.z, d.x,d.y,d.z);
+  }
+  // near cap
+  pos.push(n0.x,n0.y,n0.z, n1.x,n1.y,n1.z, n2.x,n2.y,n2.z);
+  pos.push(n0.x,n0.y,n0.z, n2.x,n2.y,n2.z, n3.x,n3.y,n3.z);
+
+  const faces = new THREE.BufferGeometry();
+  faces.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  faces.computeVertexNormals();
+  const fillMat = new THREE.MeshBasicMaterial({
+    color: cfg.fovColor, transparent:true, opacity: cfg.fillOpacity,
+    side: THREE.DoubleSide, depthWrite:false, depthTest:false
+  });
+  const mesh = new THREE.Mesh(faces, fillMat);
+  mesh.renderOrder = 10001;
+  group.add(mesh);
+
+  group.userData = { nearRect: [n0,n1,n2,n3], farRect: [f0,f1,f2,f3] };
+  return group;
+}
+
+/* ---------------------- stylized camera head ---------------------- */
+function makeSideDecalTexture(THREE) {
+  const w = 512, h = 256;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+
+  ctx.fillStyle = '#bfe6f0'; ctx.fillRect(0,0,w,h);       // pale blue base
+  ctx.fillStyle = '#f59e0b';                               // orange stripe
+  ctx.beginPath(); ctx.moveTo(64,0); ctx.lineTo(112,0); ctx.lineTo(48,h); ctx.lineTo(0,h); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = CFG.camText;                             // label
+  ctx.font = 'bold 36px system-ui, Arial, sans-serif'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 2;
+  ctx.fillText('Clowbus Security', 140, h*0.5);
+
+  const tex = new THREE.CanvasTexture(c); tex.anisotropy = 8; tex.needsUpdate = true; return tex;
+}
+
+function buildStylizedCamera(THREE) {
+  const g = new THREE.Group();
+
+  const bodyW = 0.26, bodyH = 0.16, bodyL = 0.42;
+  const geom = new THREE.BoxGeometry(bodyW, bodyH, bodyL);
+  const decal = makeSideDecalTexture(THREE);
+
+  const mRight  = new THREE.MeshBasicMaterial({ color: CFG.camTop });
+  const mLeft   = new THREE.MeshBasicMaterial({ map: decal, color: 0xffffff });
+  const mTop    = new THREE.MeshBasicMaterial({ color: CFG.camTop });
+  const mBottom = new THREE.MeshBasicMaterial({ color: CFG.camBottom });
+  const mFront  = new THREE.MeshBasicMaterial({ color: CFG.camTop });
+  const mBack   = new THREE.MeshBasicMaterial({ color: CFG.camTop });
+  const body = new THREE.Mesh(geom, [mRight,mLeft,mTop,mBottom,mFront,mBack]);
+  g.add(body);
+
+  const lip = new THREE.Mesh(new THREE.BoxGeometry(bodyW*0.98, bodyH*0.20, bodyL*0.92),
+                             new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  lip.position.y = -bodyH*0.33; lip.position.z = -bodyL*0.02; g.add(lip);
+
+  const bezel = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.085, 24),
+                               new THREE.MeshBasicMaterial({ color: 0xffffff, transparent:true, opacity:0.9 }));
+  bezel.rotation.y = Math.PI; bezel.position.z = -bodyL/2 - 0.001; g.add(bezel);
+
+  const lens = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.055, 0.055, 0.05, 24),
+    new THREE.MeshBasicMaterial({ color: 0x76ff76, transparent:true, opacity:0.35 })
+  );
+  lens.rotation.x = Math.PI/2; lens.rotation.z = Math.PI/2; lens.position.z = -bodyL/2 - 0.04; g.add(lens);
+
+  const glow = new THREE.Mesh(new THREE.SphereGeometry(0.04, 16, 12),
+                              new THREE.MeshBasicMaterial({ color: 0x66ff66, transparent:true, opacity:0.35 }));
+  glow.position.z = -bodyL/2 - 0.02; g.add(glow);
+
+  const whiteMat = new THREE.MeshBasicMaterial({ color: CFG.camWhite });
+  const hinge = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.06), whiteMat); hinge.position.set(0, -bodyH*0.65, -bodyL*0.12);
+  const arm1  = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.20, 0.03), whiteMat); arm1.position.set(0.05, -bodyH*0.95, -bodyL*0.14); arm1.rotation.z = -0.35;
+  const arm2  = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.20, 0.03), whiteMat); arm2.position.set(0.13, -bodyH*1.25, -bodyL*0.12); arm2.rotation.z = 0.25;
+  const base  = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.01, 24), whiteMat); base.position.set(0.13, -bodyH*1.37, -bodyL*0.12);
+  g.add(hinge, arm1, arm2, base);
+
+  const curve = new THREE.QuadraticBezierCurve3(
+    new THREE.Vector3(0, -bodyH*0.3, -bodyL*0.15),
+    new THREE.Vector3(0.08, -bodyH*0.95, -bodyL*0.15),
+    new THREE.Vector3(0.13, -bodyH*1.30, -bodyL*0.12)
+  );
+  const cableGeo = new THREE.TubeGeometry(curve, 12, 0.005, 8, false);
+  const cable = new THREE.Mesh(cableGeo, new THREE.MeshBasicMaterial({ color: CFG.cableBlack }));
+  g.add(cable);
+
+  return g;
+}
+
+/* ---------------------------- UI panel ---------------------------- */
+function makePanel() {
+  const id = 'fov-panel';
+  document.getElementById(id)?.remove();
+
+  const wrap = document.createElement('div');
+  wrap.id = id;
+  wrap.style.cssText =
+    'position:fixed;right:12px;bottom:12px;z-index:2147483647;background:rgba(0,0,0,.68);' +
+    'color:#fff;padding:12px;border-radius:12px;font:14px/1.15 system-ui,Arial;width:220px;' +
+    'box-shadow:0 6px 18px rgba(0,0,0,.35);user-select:none;pointer-events:auto;';
+  wrap.innerHTML = `<div style="font-weight:700;margin-bottom:10px;text-align:center;">Camera FOV Controls</div>`;
+  const grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:1fr auto auto;gap:8px;';
+  wrap.appendChild(grid);
+
+  function row(label, get, set, step, unit, min, max, decimals=0) {
+    const name = document.createElement('div'); name.textContent = label; name.style.cssText='align-self:center;';
+    const mk=(t,d)=>{const b=document.createElement('button');b.textContent=t;b.style.cssText='background:#14b8a6;border:none;color:#001;font-weight:800;border-radius:10px;padding:10px 12px;cursor:pointer;';
+      const act=(e)=>{e.preventDefault();const v=Math.max(min,Math.min(max,+(get()+d).toFixed(decimals)));set(v);val.textContent=`${get().toFixed(decimals)}${unit}`;};
+      b.addEventListener('click',act,{passive:false});b.addEventListener('touchstart',act,{passive:false});return b;};
+    const minus=mk('−',-step), plus=mk('+',step);
+    const val=document.createElement('div'); val.style.cssText='grid-column:1 / span 3;text-align:center;font-weight:700;'; val.textContent=`${get().toFixed(decimals)}${unit}`;
+    grid.appendChild(name); grid.appendChild(minus); grid.appendChild(plus); grid.appendChild(val);
+  }
+
+  const footer=document.createElement('div'); footer.style.cssText='display:flex;gap:8px;margin-top:10px;';
+  const reset=document.createElement('button'); reset.textContent='Reset'; reset.style.cssText='flex:1;background:#f59e0b;border:none;border-radius:10px;padding:10px;color:#111;font-weight:800;';
+  const hide=document.createElement('button'); hide.textContent='Hide'; hide.style.cssText='flex:1;background:#64748b;border:none;border-radius:10px;padding:10px;color:#fff;font-weight:800;';
+  footer.appendChild(reset); footer.appendChild(hide); wrap.appendChild(footer); document.body.appendChild(wrap);
+
+  return { wrap, grid, row, reset, hide };
+}
+
+/* ------------------------------ main ------------------------------ */
+const main = async () => {
+  const viewer = document.querySelector('matterport-viewer');
+  const mpSdk = await viewer.playingPromise;
+  const THREE = window.THREE;
+
+  await mpSdk.Mode.moveTo(mpSdk.Mode.Mode.INSIDE);
+
+  const [sceneObject] = await mpSdk.Scene.createObjects(1);
+  const node = sceneObject.addNode();
+
+  // Rig: yaw parent, tilt child
+  const panPivot  = new THREE.Object3D();
+  const tiltPivot = new THREE.Object3D();
+  panPivot.add(tiltPivot);
+  node.obj3D.add(panPivot);
+
+  node.obj3D.position.set(CFG.position.x, CFG.position.y, CFG.position.z);
+
+  // Styled camera head + internal THREE camera
+  const head = buildStylizedCamera(THREE);
+  tiltPivot.add(head);
+
+  const dimsFar = frustumDims(THREE, CFG.hFovDeg, CFG.aspect, CFG.far);
+  const vFovDeg = THREE.MathUtils.radToDeg(2 * Math.atan(dimsFar.halfH / CFG.far));
+  const cam = new THREE.PerspectiveCamera(vFovDeg, CFG.aspect, Math.max(0.01, CFG.near), CFG.far);
+  cam.position.set(0,0,0);
+  cam.lookAt(new THREE.Vector3(0,0,-1));
+  tiltPivot.add(cam);
+  tiltPivot.userData.frustumCam = cam;
+
+  // Truncated frustum
+  let frustumGroup = buildTruncatedFrustum(THREE, CFG);
+  tiltPivot.add(frustumGroup);
+
+  // Projector (depth-aware via raycast; falls back to floor)
+  const projector = {
+    u: CFG.projectorGrid.u, v: CFG.projectorGrid.v,
+    geom: new THREE.BufferGeometry(),
+    mat:  new THREE.MeshBasicMaterial({
+      color: CFG.fovColor, transparent: true, opacity: CFG.footprintOpacity,
+      side: THREE.DoubleSide, depthWrite: false, depthTest: false
+    }),
+    mesh: null,
+  };
+  (function initProjector(){
+    const {u,v} = projector;
+    const tris  = (u-1)*(v-1)*2;
+    projector.geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(tris*9), 3));
+    projector.mesh = new THREE.Mesh(projector.geom, projector.mat);
+    projector.mesh.renderOrder = 10002;
+    node.obj3D.add(projector.mesh);
+  })();
+
+  function applyTilt(){ tiltPivot.rotation.x = -deg2rad(CFG.tiltDeg); }
+  applyTilt();
+  node.start();
+
+  async function raycastFirst(origin, direction, maxDist) {
+    try {
+      if (typeof mpSdk.Scene.raycast === 'function') {
+        const hit = await mpSdk.Scene.raycast(
+          { x: origin.x, y: origin.y, z: origin.z },
+          { x: direction.x, y: direction.y, z: direction.z },
+          maxDist
+        );
+        if (hit?.hit) return new THREE.Vector3(hit.position.x, hit.position.y, hit.position.z);
+      } else if (mpSdk.Camera?.rayCast) {
+        const res = await mpSdk.Camera.rayCast(
+          { x: origin.x, y: origin.y, z: origin.z },
+          { x: direction.x, y: direction.y, z: direction.z },
+          maxDist
+        );
+        if (res?.hit) return new THREE.Vector3(res.position.x, res.position.y, res.position.z);
+      }
+    } catch(_) {}
+    return null;
+  }
+
+  let projectorFrame = 0;
+  async function updateProjector() {
+    // throttle ~10 fps
+    projectorFrame = (projectorFrame + 1) % 6;
+    if (projectorFrame !== 0) return;
+
+    const nearRect = frustumGroup.userData.nearRect;
+    const farRect  = frustumGroup.userData.farRect;
+    const { u, v } = projector;
+
+    const nearGrid = [], farGrid = [];
+    for (let yi=0; yi<v; yi++){
+      const ty = yi/(v-1);
+      const nA = new THREE.Vector3().lerpVectors(nearRect[0], nearRect[3], ty);
+      const nB = new THREE.Vector3().lerpVectors(nearRect[1], nearRect[2], ty);
+      const fA = new THREE.Vector3().lerpVectors(farRect[0],  farRect[3],  ty);
+      const fB = new THREE.Vector3().lerpVectors(farRect[1],  farRect[2],  ty);
+      for (let xi=0; xi<u; xi++){
+        const tx = xi/(u-1);
+        nearGrid.push(new THREE.Vector3().lerpVectors(nA, nB, tx));
+        farGrid .push(new THREE.Vector3().lerpVectors(fA, fB, tx));
+      }
+    }
+
+    const worldPts = new Array(nearGrid.length);
+    for (let i=0;i<nearGrid.length;i++){
+      const nW = tiltPivot.localToWorld(nearGrid[i].clone());
+      const fW = tiltPivot.localToWorld(farGrid[i].clone());
+      const dir = new THREE.Vector3().subVectors(fW, nW);
+      const len = dir.length(); dir.normalize();
+      let hit = await raycastFirst(nW, dir, len);
+      if (!hit) {
+        // floor fallback to your FLOOR value
+        const t = (CFG.floorY - nW.y) / (fW.y - nW.y);
+        if (t < 0 || t > 1 || !Number.isFinite(t)) { projector.mesh.visible = false; return; }
+        hit = new THREE.Vector3().copy(nW).addScaledVector(new THREE.Vector3().subVectors(fW, nW), t);
+      }
+      worldPts[i] = hit;
+    }
+    projector.mesh.visible = true;
+
+    const arr = projector.geom.attributes.position.array;
+    let k = 0;
+    for (let yi=0; yi<v-1; yi++){
+      for (let xi=0; xi<u-1; xi++){
+        const idx = yi*u + xi;
+        const p00 = node.obj3D.worldToLocal(worldPts[idx    ].clone());
+        const p10 = node.obj3D.worldToLocal(worldPts[idx + 1].clone());
+        const p01 = node.obj3D.worldToLocal(worldPts[idx + u].clone());
+        const p11 = node.obj3D.worldToLocal(worldPts[idx + u + 1].clone());
+
+        const write = (p)=>{ arr[k++]=p.x; arr[k++]=p.y+0.003; arr[k++]=p.z; };
+        write(p00); write(p10); write(p11);
+        write(p00); write(p11); write(p01);
+      }
+    }
+    projector.geom.attributes.position.needsUpdate = true;
+    projector.geom.computeVertexNormals();
+  }
+
+  // animate pan + projector
+  let phase = 0, last = performance.now();
+  async function animate(now) {
+    const dt = (now - last)/1000; last = now;
+    const yawCenter = deg2rad(CFG.baseYawDeg);
+    const yawAmp    = deg2rad(CFG.sweepDeg)*0.5;
+    const yawSpeed  = deg2rad(CFG.yawSpeedDeg);
+    phase += yawSpeed*dt;
+    panPivot.rotation.y = yawCenter + Math.sin(phase)*yawAmp;
+
+    await updateProjector();
+    requestAnimationFrame(animate);
+  }
+  requestAnimationFrame(animate);
+
+  // rebuild frustum + sync THREE camera
+  function rebuildFrustum() {
+    tiltPivot.remove(frustumGroup);
+    frustumGroup.traverse?.(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+    frustumGroup = buildTruncatedFrustum(THREE, CFG);
+    tiltPivot.add(frustumGroup);
+
+    const dimsFar2 = frustumDims(THREE, CFG.hFovDeg, CFG.aspect, CFG.far);
+    const cam = tiltPivot.userData.frustumCam;
+    if (cam) {
+      cam.fov   = THREE.MathUtils.radToDeg(2 * Math.atan(dimsFar2.halfH / CFG.far));
+      cam.aspect= CFG.aspect;
+      cam.near  = Math.max(0.01, CFG.near);
+      cam.far   = CFG.far;
+      cam.updateProjectionMatrix();
+    }
+  }
+
+  /* --------------------------- Controls --------------------------- */
+  const ui = makePanel();
+  ui.row('HFOV',   () => CFG.hFovDeg,   v => { CFG.hFovDeg=v; rebuildFrustum(); }, 1,  '°', 10,120);
+  ui.row('NEAR',   () => CFG.near,      v => { CFG.near=v;    rebuildFrustum(); }, 0.01,'', 0.02, 1, 2);
+  ui.row('FAR',    () => CFG.far,       v => { CFG.far=v;     rebuildFrustum(); }, 1,  '', 5,120);
+  ui.row('SWEEP',  () => CFG.sweepDeg,  v => { CFG.sweepDeg=v; }, 2,  '°', 10,170);
+  ui.row('YAW',    () => CFG.baseYawDeg,v => { CFG.baseYawDeg=v; }, 1, '°', -180,180);
+  ui.row('TILT',   () => CFG.tiltDeg,   v => { CFG.tiltDeg=v; applyTilt(); }, 1, '°', 0,85);
+  ui.row('HEIGHT', () => node.obj3D.position.y, v => { node.obj3D.position.y=v; CFG.position.y=v; }, 0.1,'', -100,100,1);
+  ui.row('FLOOR',  () => CFG.floorY ?? 0, v => { CFG.floorY=v; }, 0.1,'', -100,100,1);
+
+  ui.reset.addEventListener('click', e => {
+    e.preventDefault();
+    Object.assign(CFG, {
+      position:{...CFG.position, y:4.0}, aspect:16/9, hFovDeg:32, near:0.12, far:19,
+      sweepDeg:122, baseYawDeg:93, tiltDeg:10, yawSpeedDeg:14,
+      fovColor:0x00ff00, fillOpacity:0.08, edgeRadius:0.016, baseEdgeRadius:0.010,
+      camTop:0xbfe6f0, camBottom:0xeeeeee, camStripe:0xf59e0b, camText:'#f59e0b', camWhite:0xffffff, cableBlack:0x111111,
+      floorY: 0.4, footprintOpacity:0.18, projectorGrid:{u:20,v:12},
+    });
+    node.obj3D.position.y = CFG.position.y;
+    rebuildFrustum(); applyTilt();
+  });
+
+  ui.hide.addEventListener('click', e => {
+    e.preventDefault();
+    ui.wrap.style.display = (ui.wrap.style.display==='none') ? 'block':'none';
+  });
+};
+
+main().catch(console.error);
