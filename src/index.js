@@ -339,8 +339,19 @@ const main = async () => {
 
   // viewer position & mode
   let viewerPos = new THREE.Vector3();
+  // ---- NEW: throttle visibility checks on movement ----
+  const scheduleVisCheck = (() => {
+    let pending = false;
+    return () => {
+      if (pending) return;
+      pending = true;
+      setTimeout(() => { pending = false; updateVisibility(); }, 80);
+    };
+  })();
+
   mpSdk.Camera.pose.subscribe(p => {
     viewerPos.set(p.position.x, p.position.y, p.position.z);
+    scheduleVisCheck(); // <— re-evaluate gates whenever the user moves
   });
 
   let mode = mpSdk.Mode.Mode.INSIDE;
@@ -402,6 +413,7 @@ const main = async () => {
     }
 
     if (!inTargetRoom) {
+      if (DEBUG) log('VIS off: not in cafeteria room');
       node.obj3D.visible = false;
       return;
     }
@@ -410,7 +422,9 @@ const main = async () => {
     if (USE_DISTANCE_GATE) {
       const camPos = node.obj3D.getWorldPosition(new THREE.Vector3());
       const dist = camPos.distanceTo(viewerPos);
+      if (DEBUG) log('Distance to cam (m):', dist.toFixed(2));
       if (dist > MAX_DISTANCE_M) {
+        if (DEBUG) log('VIS off: beyond MAX_DISTANCE_M');
         node.obj3D.visible = false;
         return;
       }
@@ -428,10 +442,10 @@ const main = async () => {
       if (len > 0.001) {
         dir.normalize();
         const hit = await raycastFirst(viewerPos, dir, len);
-        // if something is hit clearly before our target → occluded
         const hitDist = hit?.distance ?? Number.POSITIVE_INFINITY;
         const blocked = !!hit?.hit && hitDist < (len - 0.05);
         if (tick !== visTick) return; // stale
+        if (DEBUG) log('LOS blocked?', blocked, 'hitDist:', hitDist?.toFixed?.(2), 'len:', len.toFixed(2));
         if (blocked) {
           node.obj3D.visible = false;
           return;
@@ -512,6 +526,7 @@ const main = async () => {
 
   // animate
   let phase = 0, last = performance.now();
+  let visFrame = 0;
   async function animate(now) {
     const dt = (now - last)/1000; last = now;
     const yawCenter = deg2rad(CFG.baseYawDeg);
@@ -521,6 +536,10 @@ const main = async () => {
     panPivot.rotation.y = yawCenter + Math.sin(phase)*yawAmp;
 
     await updateProjector();
+
+    // also re-check gates periodically even if pose events are missed
+    if ((visFrame = (visFrame + 1) % 30) === 0) updateVisibility();
+
     requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
