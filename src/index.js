@@ -1,5 +1,9 @@
 import '@matterport/webcomponent';
 
+/* ------------------------ Room binding ------------------------ */
+// Only show the camera when the viewer's *current sweep* belongs to this room.
+const BOUND_ROOM_ID = 'cdz3fkt38kae7tapstpt0eaeb';
+
 /* ------------------------ Defaults ------------------------ */
 const CFG = {
   // Mount position
@@ -56,6 +60,7 @@ function tubeBetween(THREE, a, b, radius, material) {
   const up = new THREE.Vector3(0,1,0);
   mesh.quaternion.setFromUnitVectors(up, dir.clone().normalize());
   mesh.position.copy(a).addScaledVector(dir, 0.5);
+  // depthTest will handle occlusion; no renderOrder override.
   return mesh;
 }
 
@@ -86,28 +91,28 @@ function buildTruncatedFrustum(THREE, cfg) {
   const f2 = new THREE.Vector3( f.halfW,  f.halfH, -far);
   const f3 = new THREE.Vector3(-f.halfW,  f.halfH, -far);
 
-  // Depth ON so FOV is occluded by geometry
+  // ✅ translucent materials: depthTest ON, depthWrite OFF
   const edgeMat = new THREE.MeshBasicMaterial({
-    color: cfg.fovColor, transparent:true, opacity:0.95,
-    depthTest:true, depthWrite:true
+    color: CFG.fovColor, transparent:true, opacity:0.95,
+    depthTest:true, depthWrite:false
   });
 
-  // four “rays”
-  group.add(tubeBetween(THREE, n0, f0, cfg.edgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, n1, f1, cfg.edgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, n2, f2, cfg.edgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, n3, f3, cfg.edgeRadius, edgeMat));
+  // “rays”
+  group.add(tubeBetween(THREE, n0, f0, CFG.edgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n1, f1, CFG.edgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n2, f2, CFG.edgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n3, f3, CFG.edgeRadius, edgeMat));
 
   // near/far perimeters
-  group.add(tubeBetween(THREE, n0, n1, cfg.baseEdgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, n1, n2, cfg.baseEdgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, n2, n3, cfg.baseEdgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, n3, n0, cfg.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n0, n1, CFG.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n1, n2, CFG.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n2, n3, CFG.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, n3, n0, CFG.baseEdgeRadius, edgeMat));
 
-  group.add(tubeBetween(THREE, f0, f1, cfg.baseEdgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, f1, f2, cfg.baseEdgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, f2, f3, cfg.baseEdgeRadius, edgeMat));
-  group.add(tubeBetween(THREE, f3, f0, cfg.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, f0, f1, CFG.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, f1, f2, CFG.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, f2, f3, CFG.baseEdgeRadius, edgeMat));
+  group.add(tubeBetween(THREE, f3, f0, CFG.baseEdgeRadius, edgeMat));
 
   // faces (sides + small near cap)
   const pos = [];
@@ -126,8 +131,8 @@ function buildTruncatedFrustum(THREE, cfg) {
   faces.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   faces.computeVertexNormals();
   const fillMat = new THREE.MeshBasicMaterial({
-    color: cfg.fovColor, transparent:true, opacity: cfg.fillOpacity,
-    side: THREE.DoubleSide, depthTest:true, depthWrite:true
+    color: CFG.fovColor, transparent:true, opacity: CFG.fillOpacity,
+    side: THREE.DoubleSide, depthTest:true, depthWrite:false
   });
   const mesh = new THREE.Mesh(faces, fillMat);
   group.add(mesh);
@@ -172,6 +177,7 @@ function buildStylizedCamera(THREE) {
   // Materials
   const mWhite = new THREE.MeshLambertMaterial({ color: 0xeeeeee });
   const mTop   = new THREE.MeshLambertMaterial({ color: 0xbfe6f0 });
+  const mBlue  = mTop;
   const mDecal = new THREE.MeshBasicMaterial({ map: makeSideDecalTexture(THREE) });
 
   // helper to build a quad
@@ -207,7 +213,7 @@ function buildStylizedCamera(THREE) {
     new THREE.Vector3( wBack/2, hBack/2, zB),
     new THREE.Vector3( wFront/2, hFront/2, zF),
     new THREE.Vector3(-wFront/2, hFront/2, zF),
-    mTop
+    mBlue
   ));
   group.add(quad(
     new THREE.Vector3(-wBack/2,-hBack/2, zB),
@@ -405,7 +411,7 @@ const main = async () => {
     geom: new THREE.BufferGeometry(),
     mat:  new THREE.MeshBasicMaterial({
       color: CFG.fovColor, transparent: true, opacity: CFG.footprintOpacity,
-      side: THREE.DoubleSide, depthTest:true, depthWrite:true
+      side: THREE.DoubleSide, depthTest:true, depthWrite:false
     }),
     mesh: null,
   };
@@ -420,79 +426,6 @@ const main = async () => {
   function applyTilt(){ tiltPivot.rotation.x = -deg2rad(CFG.tiltDeg); }
   applyTilt();
   node.start();
-
-  /* ------------------ VISIBILITY GATING (mode + room + LoS + distance) ------------------ */
-  const BOUND_ROOM_ID = 'cdz3fkt38kae7tapstpt0eaeb'; // cafeteria room
-
-  const VIS = {
-    allowModes: new Set([mpSdk.Mode.Mode.INSIDE /*, mpSdk.Mode.Mode.FLOORPLAN*/]),
-    maxDistance: 18,      // meters (tighten to kill far-away visibility)
-    losIntervalMs: 240,   // LoS throttle
-    useRooms: true
-  };
-
-  let currentMode = mpSdk.Mode.current?.value ?? mpSdk.Mode.Mode.INSIDE;
-  let currentRooms = new Set();
-
-  mpSdk.Mode.current.subscribe(mode => { currentMode = mode; updateVisibility(); });
-
-  mpSdk.Room.current.subscribe(ids => {
-    // Helpful for debugging; you should see this when moving.
-    console.log('Room.current IDs:', ids);
-    currentRooms = new Set(ids || []);
-    updateVisibility();
-  });
-
-  const rigWorld = new THREE.Vector3();
-
-  async function getViewerPosition() {
-    if (typeof mpSdk.Camera.getPosition === 'function') {
-      return mpSdk.Camera.getPosition();
-    }
-    const pose = mpSdk.Camera.pose?.value;
-    return pose?.position ?? null;
-  }
-
-  async function updateVisibility() {
-    // Mode gate
-    if (!VIS.allowModes.has(currentMode)) { node.obj3D.visible = false; return; }
-
-    // Room gate (presence in the set is enough; distance/LoS will tighten it)
-    if (VIS.useRooms && !currentRooms.has(BOUND_ROOM_ID)) {
-      node.obj3D.visible = false; return;
-    }
-
-    try {
-      const camPos = await getViewerPosition();
-      if (!camPos) { node.obj3D.visible = true; return; }
-
-      const viewer = new THREE.Vector3(camPos.x, camPos.y, camPos.z);
-      rigWorld.setFromMatrixPosition(node.obj3D.matrixWorld);
-
-      // Distance gate
-      const seg = new THREE.Vector3().subVectors(rigWorld, viewer);
-      const len = seg.length();
-      if (len > VIS.maxDistance) { node.obj3D.visible = false; return; }
-
-      // Line-of-sight gate
-      const dir = seg.clone().normalize();
-      const hit = await mpSdk.Scene.raycast(
-        { x: viewer.x, y: viewer.y, z: viewer.z },
-        { x: dir.x,    y: dir.y,    z: dir.z },
-        Math.max(0, len - 0.05)
-      );
-
-      const blocked = hit?.hit && (hit.distance ?? len) < (len - 0.05);
-      node.obj3D.visible = !blocked;
-    } catch {
-      // Fail-open if raycast not available
-      node.obj3D.visible = true;
-    }
-  }
-
-  setInterval(updateVisibility, VIS.losIntervalMs);
-  updateVisibility();
-  /* -------------------------------------------------------------------------------------- */
 
   async function raycastFirst(origin, direction, maxDist) {
     try {
@@ -575,7 +508,33 @@ const main = async () => {
     projector.geom.computeVertexNormals();
   }
 
-  // animate pan + projector
+  // ------------------------- VISIBILITY (strict sweep-room) -------------------------
+  let currentSweepRoomId = null;
+
+  function updateVisibility() {
+    const show = (currentSweepRoomId === BOUND_ROOM_ID);
+    node.obj3D.visible = !!show;
+    if (projector.mesh) projector.mesh.visible = !!show;
+  }
+
+  // Initial sweep-room (in case the subscription hasn't fired yet)
+  try {
+    const sid0 = mpSdk.Sweep.current.value;
+    const data0 = mpSdk.Sweep.data.value?.[sid0];
+    currentSweepRoomId = data0?.roomInfo?.id || null;
+    updateVisibility();
+  } catch(_) {}
+
+  // React to sweep changes (this is the strict gate)
+  mpSdk.Sweep.current.subscribe((sid) => {
+    const data = mpSdk.Sweep.data.value?.[sid];
+    currentSweepRoomId = data?.roomInfo?.id || null;
+    // console.log('Sweep room id:', currentSweepRoomId);
+    updateVisibility();
+  });
+  // -----------------------------------------------------------------------------------
+
+  // animate pan + projector (skip projector work when hidden)
   let phase = 0, last = performance.now();
   async function animate(now) {
     const dt = (now - last)/1000; last = now;
@@ -585,7 +544,9 @@ const main = async () => {
     phase += yawSpeed*dt;
     panPivot.rotation.y = yawCenter + Math.sin(phase)*yawAmp;
 
-    await updateProjector();
+    if (node.obj3D.visible) {
+      await updateProjector();
+    }
     requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
@@ -606,8 +567,6 @@ const main = async () => {
       cam.far   = CFG.far;
       cam.updateProjectionMatrix();
     }
-    // Visibility can change when optics move
-    updateVisibility();
   }
 
   /* --------------------------- Controls --------------------------- */
@@ -619,7 +578,7 @@ const main = async () => {
   ui.row('SWEEP',    () => CFG.sweepDeg,          v => { CFG.sweepDeg=v; }, 2,  '°', 10,170);
   ui.row('YAW',      () => CFG.baseYawDeg,        v => { CFG.baseYawDeg=v; }, 1, '°', -180,180);
   ui.row('TILT',     () => CFG.tiltDeg,           v => { CFG.tiltDeg=v; applyTilt(); }, 1, '°', 0,85);
-  ui.row('HEIGHT',   () => node.obj3D.position.y, v => { node.obj3D.position.y=v; CFG.position.y=v; updateVisibility(); }, 0.1,'', -100,100,1);
+  ui.row('HEIGHT',   () => node.obj3D.position.y, v => { node.obj3D.position.y=v; CFG.position.y=v; }, 0.1,'', -100,100,1);
   ui.row('FLOOR',    () => CFG.floorY ?? 0,       v => { CFG.floorY=v; }, 0.1,'', -100,100,1);
 
   ui.reset.addEventListener('click', e => {
@@ -633,7 +592,8 @@ const main = async () => {
       floorY: 0.4, footprintOpacity:0.18, projectorGrid:{u:20,v:12},
     });
     node.obj3D.position.y = CFG.position.y;
-    rebuildFrustum(); applyTilt(); updateVisibility();
+    rebuildFrustum(); applyTilt();
+    updateVisibility();
   });
 
   ui.hide.addEventListener('click', e => {
