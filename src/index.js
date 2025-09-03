@@ -42,11 +42,13 @@ const USE_SWEEP_GATE = true;
 const USE_ROOM_GATE  = true;
 const SHOW_IN_FLOORPLAN = true;
 
-// Outdoor tag labels look like “Security Camera …”
-// (Relaxed: match anything containing "camera" in label || description)
-const OUTDOOR_TAG_MATCH = /camera/i;
+// Strict outdoor tag rules
+// Accept labels like “Security Camera …” or “Outdoor Camera …”
+const OUTDOOR_TAG_MATCH = /^\s*(security|outdoor)\s*camera\b/i;
+// Explicit skip for planning tags like “Camera POS / Position”
+const OUTDOOR_IGNORE_RE = /\b(pos|position)\b/i;
 
-// For outdoors we keep LOS OFF so they're always visible (walls still occlude by depth test)
+// Outdoors: keep LOS OFF so they are always visible (walls still occlude via depthTest)
 const USE_OUTDOOR_LOS = 'off';
 
 /* ================= Infrastructure ================= */
@@ -96,7 +98,7 @@ function buildTruncatedFrustum(THREE, cfg) {
   const edgeMat = new THREE.MeshBasicMaterial({
     color: cfg.fovColor ?? 0x00ff00, transparent: true, opacity: 0.95,
     depthTest: true, depthWrite: false,
-    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
   });
 
   group.add(tubeBetween(THREE, n0, f0, cfg.edgeRadius ?? 0.016, edgeMat));
@@ -130,12 +132,12 @@ function buildTruncatedFrustum(THREE, cfg) {
   const fillMat = new THREE.MeshBasicMaterial({
     color: cfg.fovColor ?? 0x00ff00, transparent: true, opacity: cfg.fillOpacity ?? 0.08,
     side: THREE.DoubleSide, depthTest: true, depthWrite: false,
-    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
   });
   const mesh = new THREE.Mesh(faces, fillMat);
   group.add(mesh);
 
-  // stash materials for potential fades later
+  // for optional fades later
   edgeMat.userData = { baseOpacity: edgeMat.opacity };
   fillMat.userData = { baseOpacity: fillMat.opacity };
 
@@ -341,13 +343,13 @@ function makePanel(selectedId = 'cafeteria') {
       row('TILT',  ()=>CFG.tiltDeg,    v=>{ CFG.tiltDeg=v; rig.applyTilt(); }, 1,'°',0,85);
       row('MaxDist', ()=>cfg.maxDistanceM ?? 25, v=>{ cfg.maxDistanceM=v; }, 1,'m',5,80);
     } else { // outdoor
-      // NEW: live controls for sweep + speed
+      // NEW: live controls for sweep + speed (YAW is the center)
       row('SWEEP', ()=> (cfg.sweepDeg ?? CFG.sweepDeg ?? 90), v=>{ cfg.sweepDeg=v; }, 2,'°',10,170);
       row('YawSpd', ()=> (cfg.yawSpeedDeg ?? 10), v=>{ cfg.yawSpeedDeg=v; }, 1,'°/s',1,60);
 
       row('YAW',   ()=>cfg.yawDeg, v=>{ cfg.yawDeg=v; refs.pan.rotation.y = deg2rad(v); }, 1,'°',-180,180);
       row('TILT',  ()=>cfg.tiltDeg, v=>{ cfg.tiltDeg=v; rig.applyTilt(); }, 1,'°',0,85);
-      row('MaxDist', ()=> (cfg.maxDistanceM ?? 35), v=>{ cfg.maxDistanceM=v; if (refs && 'maxDistanceM' in refs) refs.maxDistanceM = v; }, 1,'m',5,100);
+      row('MaxDist', ()=> (cfg.maxDistanceM ?? 35), v=>{ cfg.maxDistanceM=v; }, 1,'m',5,100);
     }
   }
 
@@ -486,8 +488,19 @@ const main = async () => {
   async function spawnOutdoorCamsFromTags() {
     const tags = await getTagsWithTimeout();
     log('Tags fetched:', tags?.length);
-    const camTags = (tags || []).filter(t => OUTDOOR_TAG_MATCH.test(`${t.label || ''} ${t.description || ''}`));
+
+    const camTags = (tags || []).filter(t => {
+      const label = `${t.label || ''}`.trim();
+      const desc  = `${t.description || ''}`.trim();
+      if (!label) return false;
+      if (OUTDOOR_IGNORE_RE.test(label)) return false;           // skip “Camera POS / Position”
+      if (OUTDOOR_TAG_MATCH.test(label)) return true;            // “Security/Outdoor Camera …”
+      if (/\boutdoor\b/i.test(desc)) return true;                // optional: description says outdoor
+      return false;
+    });
+
     log('Outdoor-matched tags:', camTags.length);
+
     for (const t of camTags) {
       const cfg = parseOutdoorCfgFromTag(t);
       const rig = makeFovOnlyRig(THREE, sceneObject, cfg, 0x00ff00);
@@ -547,7 +560,7 @@ const main = async () => {
   let mode = mpSdk.Mode.Mode.INSIDE;
   mpSdk.Mode.current.subscribe(m => { mode = m; });
 
-  // Room.current subscriptions kept for cafeteria gating only
+  // Room.current (for cafeteria gating)
   let currentRooms = new Set();
   mpSdk.Room.current.subscribe((payload) => {
     try {
@@ -596,6 +609,7 @@ const main = async () => {
     const maxDist = rigs.get('cafeteria')?.cfg?.maxDistanceM ?? 25;
     if (dist > maxDist) { rootNode.obj3D.visible = false; return; }
 
+    // LOS gate toward far-plane center
     const fr = frustumGroup?.userData?.farRect;
     if (fr) {
       const centerLocal = new THREE.Vector3().add(fr[0]).add(fr[1]).add(fr[2]).add(fr[3]).multiplyScalar(0.25);
@@ -622,7 +636,7 @@ const main = async () => {
     rig.node.obj3D.visible = true;
   }
 
-  // Cafeteria projector update (same as your working version)
+  // --- Cafeteria projector update
   async function updateProjector() {
     if (!rootNode.obj3D.visible) { projector.mesh.visible = false; return; }
 
@@ -682,7 +696,7 @@ const main = async () => {
     projector.geom.computeVertexNormals();
   }
 
-  // Outdoor projector (robust)
+  // --- Outdoor projector (robust)
   async function updateOutdoorProjector(rig) {
     const frustum = (typeof rig.frustum === 'function' ? rig.frustum() : rig.frustum);
     if (!rig?.node || !frustum || !rig?.projector) return;
@@ -801,7 +815,7 @@ const main = async () => {
     const tasks = [];
     for (const entry of rigs.values()) {
       if (entry.type === 'outdoor') {
-        tasks.push(updateOutdoorProjector(entry.refs)); tasks.push(updateOutdoorCamVisibility(entry.refs));
+        tasks.push(updateOutdoorProjector(entry.refs), updateOutdoorCamVisibility(entry.refs));
       }
     }
     await Promise.allSettled(tasks);
