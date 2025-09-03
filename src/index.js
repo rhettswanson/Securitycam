@@ -45,6 +45,9 @@ const SHOW_IN_FLOORPLAN = true;
 // Outdoor tag labels look like “Security Camera …”
 const OUTDOOR_TAG_MATCH = /^\s*security\s*camera\b/i;
 
+// Choose outdoor LOS mode: 'cam' (recommended) | 'far' (old way) | 'off'
+const USE_OUTDOOR_LOS = 'cam';
+
 /* ================= Infrastructure ================= */
 const rigs = new Map(); window._rigs = rigs; // id -> { id, label, type, cfg, refs, rebuild, applyTilt }
 function registerRig(entry) { rigs.set(entry.id, entry); }
@@ -331,7 +334,7 @@ function makePanel(selectedId = 'cafeteria') {
     } else { // outdoor
       row('YAW',   ()=>cfg.yawDeg, v=>{ cfg.yawDeg=v; refs.pan.rotation.y = deg2rad(v); }, 1,'°',-180,180);
       row('TILT',  ()=>cfg.tiltDeg, v=>{ cfg.tiltDeg=v; rig.applyTilt(); }, 1,'°',0,85);
-      // 🔶 update cfg AND refs proxy so visibility gate reacts immediately
+      // update cfg AND refs proxy so the gates react immediately
       row('MaxDist',
           ()=>cfg.maxDistanceM ?? 35,
           v=>{ cfg.maxDistanceM=v; if (refs && 'maxDistanceM' in refs) refs.maxDistanceM = v; },
@@ -506,7 +509,7 @@ const main = async () => {
           projectorU: rig.projectorU,
           projectorV: rig.projectorV,
           get groundY() { return rig.groundY; },
-          // 🔶 Proxy so UI & gates use per-rig distance
+          // Proxy so UI & gates use per-rig distance
           get maxDistanceM() { return cfg.maxDistanceM ?? 35; },
           set maxDistanceM(v) { cfg.maxDistanceM = v; },
         },
@@ -678,29 +681,40 @@ const main = async () => {
     projector.geom.computeVertexNormals();
   }
 
+  // === UPDATED: friendlier outdoor LOS visibility ===
   async function updateOutdoorCamVisibility(rig) {
-    // rig may be refs
-    const fr = (typeof rig.frustum === 'function' ? rig.frustum() : rig.frustum)?.userData?.farRect;
-    if (!rig?.node || !rig?.tilt || !fr) return;
+    if (!rig?.node || !rig?.tilt) return;
 
+    // Distance gate
     const camPos = rig.node.obj3D.getWorldPosition(new THREE.Vector3());
-    const dist = camPos.distanceTo(viewerPos);
-    const maxD = (rig.maxDistanceM ?? 35); // optional per-rig override (proxied)
+    const dist   = camPos.distanceTo(viewerPos);
+    const maxD   = rig.maxDistanceM ?? 35; // via refs proxy
     if (dist > maxD) { rig.node.obj3D.visible = false; return; }
 
-    const centerLocal = new THREE.Vector3().add(fr[0]).add(fr[1]).add(fr[2]).add(fr[3]).multiplyScalar(0.25);
-    const target = rig.tilt.localToWorld(centerLocal.clone());
+    // No LOS gating
+    if (USE_OUTDOOR_LOS === 'off') { rig.node.obj3D.visible = true; return; }
+
+    // LOS target
+    let target;
+    if (USE_OUTDOOR_LOS === 'cam') {
+      target = camPos; // viewer must see the camera head
+    } else { // 'far' – original far-plane center
+      const frustum = (typeof rig.frustum === 'function' ? rig.frustum() : rig.frustum);
+      const fr = frustum?.userData?.farRect;
+      if (!fr) { rig.node.obj3D.visible = true; return; }
+      const centerLocal = new THREE.Vector3().add(fr[0]).add(fr[1]).add(fr[2]).add(fr[3]).multiplyScalar(0.25);
+      target = rig.tilt.localToWorld(centerLocal.clone());
+    }
 
     const dir = new THREE.Vector3().subVectors(target, viewerPos);
     const len = dir.length();
     if (len <= 0.001) { rig.node.obj3D.visible = false; return; }
     dir.normalize();
 
-    let hit = null;
-    try { hit = await mpSdk.Scene.raycast({ x: viewerPos.x, y: viewerPos.y, z: viewerPos.z }, { x: dir.x, y: dir.y, z: dir.z }, len); } catch (_){}
+    const hit = await raycastFirst(viewerPos, dir, len); // safe even if SDK has no raycast
+    if (!hit || !hit.hit) { rig.node.obj3D.visible = true; return; }
 
-    const hitDist = hit?.distance ?? Number.POSITIVE_INFINITY;
-    const blocked = !!hit?.hit && hitDist < (len - 0.05);
+    const blocked = hit.distance < (len - 0.05);
     rig.node.obj3D.visible = !blocked;
   }
 
