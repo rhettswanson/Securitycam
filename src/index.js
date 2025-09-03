@@ -46,7 +46,7 @@ const SHOW_IN_FLOORPLAN = true;
 const OUTDOOR_TAG_MATCH = /^\s*security\s*camera\b/i;
 
 /* ================= Infrastructure ================= */
-const rigs = new Map(); // id -> { id, label, type, cfg, refs, rebuild, applyTilt }
+const rigs = new Map(); window._rigs = rigs; // id -> { id, label, type, cfg, refs, rebuild, applyTilt }
 function registerRig(entry) { rigs.set(entry.id, entry); }
 const log = (...a) => { if (DEBUG) console.log('[SECAM]', ...a); };
 const deg2rad = d => d * Math.PI / 180;
@@ -289,6 +289,7 @@ function makePanel(selectedId = 'cafeteria') {
     if (r.id === selectedId) o.selected = true;
     pick.appendChild(o);
   }
+
   wrap.appendChild(pick);
 
   const grid = document.createElement('div');
@@ -345,6 +346,9 @@ function makePanel(selectedId = 'cafeteria') {
 
   return { wrap, pick };
 }
+
+// Expose the panel builder
+window._makePanel = makePanel;
 
 /* ============================ Main ============================ */
 const main = async () => {
