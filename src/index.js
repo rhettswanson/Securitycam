@@ -42,13 +42,10 @@ const USE_SWEEP_GATE = true;
 const USE_ROOM_GATE  = true;
 const SHOW_IN_FLOORPLAN = true;
 
-// Strict outdoor tag rules
-// Accept labels like “Security Camera …” or “Outdoor Camera …”
-const OUTDOOR_TAG_MATCH = /^\s*(security|outdoor)\s*camera\b/i;
-// Explicit skip for planning tags like “Camera POS / Position”
-const OUTDOOR_IGNORE_RE = /\b(pos|position)\b/i;
+// Outdoor tag labels look like “Security Camera …”
+const OUTDOOR_TAG_MATCH = /^\s*security\s*camera\b/i;
 
-// Outdoors: keep LOS OFF so they are always visible (walls still occlude via depthTest)
+// LOS mode for OUTDOOR frusta: leave OFF (always visible) — projector still respects walls
 const USE_OUTDOOR_LOS = 'off';
 
 /* ================= Infrastructure ================= */
@@ -94,11 +91,11 @@ function buildTruncatedFrustum(THREE, cfg) {
   const f2 = new THREE.Vector3( f.halfW,  f.halfH, -far);
   const f3 = new THREE.Vector3(-f.halfW,  f.halfH, -far);
 
-  // Beams (edges) — match cafeteria look + polygon offset to reduce z-fighting
+  // Match cafeteria styling + polygonOffset to reduce z-fighting
   const edgeMat = new THREE.MeshBasicMaterial({
     color: cfg.fovColor ?? 0x00ff00, transparent: true, opacity: 0.95,
     depthTest: true, depthWrite: false,
-    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
   });
 
   group.add(tubeBetween(THREE, n0, f0, cfg.edgeRadius ?? 0.016, edgeMat));
@@ -116,7 +113,6 @@ function buildTruncatedFrustum(THREE, cfg) {
   group.add(tubeBetween(THREE, f2, f3, cfg.baseEdgeRadius ?? 0.010, edgeMat));
   group.add(tubeBetween(THREE, f3, f0, cfg.baseEdgeRadius ?? 0.010, edgeMat));
 
-  // Fill (faces) — match cafeteria look + polygon offset
   const pos = [];
   const quads = [[n0,n1,f1,f0],[n1,n2,f2,f1],[n2,n3,f3,f2],[n3,n0,f0,f3]];
   for (const [a,b,c,d] of quads) {
@@ -132,16 +128,13 @@ function buildTruncatedFrustum(THREE, cfg) {
   const fillMat = new THREE.MeshBasicMaterial({
     color: cfg.fovColor ?? 0x00ff00, transparent: true, opacity: cfg.fillOpacity ?? 0.08,
     side: THREE.DoubleSide, depthTest: true, depthWrite: false,
-    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
   });
   const mesh = new THREE.Mesh(faces, fillMat);
+  mesh.renderOrder = 1;
   group.add(mesh);
 
-  // for optional fades later
-  edgeMat.userData = { baseOpacity: edgeMat.opacity };
-  fillMat.userData = { baseOpacity: fillMat.opacity };
-
-  group.userData = { nearRect: [n0,n1,n2,n3], farRect: [f0,f1,f2,f3], materials: { edge: edgeMat, fill: fillMat } };
+  group.userData = { nearRect: [n0,n1,n2,n3], farRect: [f0,f1,f2,f3] };
   return group;
 }
 
@@ -252,7 +245,7 @@ function buildStylizedCamera(THREE) {
 /* =========== FOV-only rig (for outdoor cameras) =========== */
 function makeFovOnlyRig(THREE, sceneObject, cfg, color = CFG.fovColor) {
   const node = sceneObject.addNode();
-  node.obj3D.visible = true; // always visible
+  node.obj3D.visible = true; // always on
 
   const pan = new THREE.Object3D();
   const tilt = new THREE.Object3D();
@@ -265,13 +258,14 @@ function makeFovOnlyRig(THREE, sceneObject, cfg, color = CFG.fovColor) {
   const frustum = buildTruncatedFrustum(THREE, { ...CFG, ...cfg, fovColor: color });
   tilt.add(frustum);
 
-  // projector mesh
+  // projector mesh (matches cafeteria styling + polygonOffset)
   const u = 20, v = 12, tris = (u-1)*(v-1)*2;
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(tris*9), 3));
   const mat = new THREE.MeshBasicMaterial({
     color, transparent:true, opacity: CFG.footprintOpacity,
-    side: THREE.DoubleSide, depthTest:true, depthWrite:false
+    side: THREE.DoubleSide, depthTest:true, depthWrite:false,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
   });
   const projector = new THREE.Mesh(geom, mat);
   node.obj3D.add(projector);
@@ -287,7 +281,7 @@ function makePanel(selectedId = 'cafeteria') {
   wrap.id = 'fov-panel';
   wrap.style.cssText =
     'position:fixed;right:12px;bottom:12px;z-index:2147483647;background:rgba(0,0,0,.68);' +
-    'color:#fff;padding:12px;border-radius:12px;font:14px/1.15 system-ui,Arial;width:260px;box-shadow:0 6px 18px rgba(0,0,0,.35);';
+    'color:#fff;padding:12px;border-radius:12px;font:14px/1.15 system-ui,Arial;width:240px;box-shadow:0 6px 18px rgba(0,0,0,.35);';
   document.body.appendChild(wrap);
 
   const title = document.createElement('div');
@@ -303,7 +297,6 @@ function makePanel(selectedId = 'cafeteria') {
     if (r.id === selectedId) o.selected = true;
     pick.appendChild(o);
   }
-
   wrap.appendChild(pick);
 
   const grid = document.createElement('div');
@@ -333,6 +326,7 @@ function makePanel(selectedId = 'cafeteria') {
       grid.appendChild(name); grid.appendChild(minus); grid.appendChild(plus);
     };
 
+    // shared optics
     row('HFOV',  ()=>cfg.hFovDeg, v=>{cfg.hFovDeg=v; rig.rebuild();}, 1,'°',10,120);
     row('NEAR',  ()=>cfg.near,    v=>{cfg.near=v;    rig.rebuild();}, 0.01,'',0.02,1,2);
     row('FAR',   ()=>cfg.far,     v=>{cfg.far=v;     rig.rebuild();}, 1,'',5,120);
@@ -343,13 +337,12 @@ function makePanel(selectedId = 'cafeteria') {
       row('TILT',  ()=>CFG.tiltDeg,    v=>{ CFG.tiltDeg=v; rig.applyTilt(); }, 1,'°',0,85);
       row('MaxDist', ()=>cfg.maxDistanceM ?? 25, v=>{ cfg.maxDistanceM=v; }, 1,'m',5,80);
     } else { // outdoor
-      // NEW: live controls for sweep + speed (YAW is the center)
-      row('SWEEP', ()=> (cfg.sweepDeg ?? CFG.sweepDeg ?? 90), v=>{ cfg.sweepDeg=v; }, 2,'°',10,170);
-      row('YawSpd', ()=> (cfg.yawSpeedDeg ?? 10), v=>{ cfg.yawSpeedDeg=v; }, 1,'°/s',1,60);
-
-      row('YAW',   ()=>cfg.yawDeg, v=>{ cfg.yawDeg=v; refs.pan.rotation.y = deg2rad(v); }, 1,'°',-180,180);
-      row('TILT',  ()=>cfg.tiltDeg, v=>{ cfg.tiltDeg=v; rig.applyTilt(); }, 1,'°',0,85);
-      row('MaxDist', ()=> (cfg.maxDistanceM ?? 35), v=>{ cfg.maxDistanceM=v; }, 1,'m',5,100);
+      row('SWEEP', ()=>cfg.sweepDeg ?? 90, v=>{ cfg.sweepDeg=v; }, 2,'°',0,180);
+      row('YawSpd',()=>cfg.yawSpeedDeg ?? 10, v=>{ cfg.yawSpeedDeg=v; }, 0.5,'°/s',0,90,1);
+      row('YAW',   ()=>cfg.yawDeg ?? 0, v=>{ cfg.yawDeg=v; refs.pan.rotation.y = deg2rad(v); }, 1,'°',-180,180);
+      row('TILT',  ()=>cfg.tiltDeg ?? 10, v=>{ cfg.tiltDeg=v; rig.applyTilt(); }, 1,'°',0,85);
+      // expose a per-rig MaxDist but it doesn't gate visibility anymore; kept for projector range if you want later
+      row('MaxDist', ()=>cfg.maxDistanceM ?? 35, v=>{ cfg.maxDistanceM=v; if (refs && 'maxDistanceM' in refs) refs.maxDistanceM = v; }, 1,'m',5,100);
     }
   }
 
@@ -409,7 +402,8 @@ const main = async () => {
     geom: new THREE.BufferGeometry(),
     mat:  new THREE.MeshBasicMaterial({
       color: CFG.fovColor, transparent: true, opacity: CFG.footprintOpacity,
-      side: THREE.DoubleSide, depthTest: true, depthWrite: false
+      side: THREE.DoubleSide, depthTest: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
     }),
     mesh: null,
   };
@@ -435,7 +429,7 @@ const main = async () => {
       Object.assign(CFG, { hFovDeg: cafeteriaCfg.hFovDeg, near: cafeteriaCfg.near, far: cafeteriaCfg.far });
       frustumGroup = buildTruncatedFrustum(THREE, CFG);
       tiltPivot.add(frustumGroup);
-      updateVisibility();
+      updateCafVisibility();
     },
     applyTilt: () => applyTilt(),
   });
@@ -444,12 +438,12 @@ const main = async () => {
   rootNode.start();
   makePanel('cafeteria');
 
-  /* -------- Outdoor rigs from Mattertags (robust) -------- */
+  /* -------- Outdoor rigs from Mattertags -------- */
   const outdoorCams = [];
 
-  function pickNum(text, re, d) { const m = text?.match?.(re); return m ? parseFloat(m[1]) : d; }
+  function pickNum(text, re, d) { const m = (text || '').match(re); return m ? parseFloat(m[1]) : d; }
   function parseOutdoorCfgFromTag(tag) {
-    const txt = `${tag.label || ''}\n${tag.description || ''}`;
+    const txt = (tag.label || '') + '\n' + (tag.description || '');
     return {
       position: { x: tag.anchorPosition.x, y: tag.anchorPosition.y, z: tag.anchorPosition.z },
       hFovDeg: pickNum(txt, /\bhfov\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 32),
@@ -457,66 +451,69 @@ const main = async () => {
       far:     pickNum(txt, /\bfar\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 22),
       yawDeg:  pickNum(txt, /\byaw\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 0),
       tiltDeg: pickNum(txt, /\btilt\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 10),
-      sweepDeg: pickNum(txt, /\bsweep\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, CFG.sweepDeg ?? 90),
-      yawSpeedDeg: pickNum(txt, /\byawspeed\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 10),
       maxDistanceM: pickNum(txt, /\bmaxdist\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 35),
+      sweepDeg: pickNum(txt, /\bsweep\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 90),
+      yawSpeedDeg: pickNum(txt, /\byawsp(?:eed)?\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 10),
       aspect: 16/9,
     };
   }
 
   async function getTagsWithTimeout(ms = 1500) {
-    // Try Tag.data first, but don't wait forever
-    if (mpSdk.Tag?.data?.subscribe) {
+    // Try Tag.data first (new SDK)
+    if (mpSdk.Tag && mpSdk.Tag.data && typeof mpSdk.Tag.data.subscribe === 'function') {
       const tagDataPromise = new Promise(resolve => {
         const unsub = mpSdk.Tag.data.subscribe(tags => {
           try {
-            const arr = Array.isArray(tags)
-              ? tags
-              : (tags?.toArray?.() ?? Object.values(tags ?? {}));
-            if (arr) { unsub?.(); resolve(arr); }
-          } catch { unsub?.(); resolve([]); }
+            const arr = Array.isArray(tags) ? tags :
+              (tags && typeof tags.toArray === 'function') ? tags.toArray() :
+              (tags ? Object.values(tags) : []);
+            unsub && unsub();
+            resolve(arr);
+          } catch { resolve([]); }
         });
       });
       const timeout = new Promise(resolve => setTimeout(() => resolve(null), ms));
       const viaNew = await Promise.race([tagDataPromise, timeout]);
       if (viaNew) return viaNew;
     }
-    // Fallback (deprecated)
+    // Fallback (deprecated API)
     try { return await mpSdk.Mattertag.getData(); } catch { return []; }
+  }
+
+  async function initOutdoorGround(rig) {
+    try {
+      const origin = rig.node.obj3D.getWorldPosition(new THREE.Vector3());
+      const hit = await mpSdk.Scene.raycast(
+        { x: origin.x, y: origin.y, z: origin.z },
+        { x: 0, y: -1, z: 0 },
+        60
+      );
+      rig.groundY = (hit && hit.hit) ? hit.position.y : 0.0;
+      if (DEBUG) log('Outdoor rig groundY:', rig.groundY);
+    } catch { rig.groundY = 0.0; }
   }
 
   async function spawnOutdoorCamsFromTags() {
     const tags = await getTagsWithTimeout();
-    log('Tags fetched:', tags?.length);
-
-    const camTags = (tags || []).filter(t => {
-      const label = `${t.label || ''}`.trim();
-      const desc  = `${t.description || ''}`.trim();
-      if (!label) return false;
-      if (OUTDOOR_IGNORE_RE.test(label)) return false;           // skip “Camera POS / Position”
-      if (OUTDOOR_TAG_MATCH.test(label)) return true;            // “Security/Outdoor Camera …”
-      if (/\boutdoor\b/i.test(desc)) return true;                // optional: description says outdoor
-      return false;
-    });
-
-    log('Outdoor-matched tags:', camTags.length);
+    const camTags = tags.filter(t => OUTDOOR_TAG_MATCH.test(t.label || ''));
+    if (DEBUG) log('Tags fetched:', tags.length, 'Outdoor-matched tags:', camTags.length);
 
     for (const t of camTags) {
       const cfg = parseOutdoorCfgFromTag(t);
-      const rig = makeFovOnlyRig(THREE, sceneObject, cfg, 0x00ff00);
+      const rig = makeFovOnlyRig(THREE, sceneObject, cfg, CFG.fovColor);
       outdoorCams.push({ ...rig, cfg, tagSid: t.sid, label: t.label });
+      await initOutdoorGround(rig);
 
-      // start outdoor node so it actually renders
-      rig.node.start();
+      rig.node.start(); // render
 
       const id = t.sid || `out-${outdoorCams.length}`;
       const label = t.label || `Outdoor ${outdoorCams.length}`;
 
+      // per-rig animation state
+      rig.phase = 0;
+
       registerRig({
-        id,
-        label,
-        type: 'outdoor',
-        cfg,
+        id, label, type: 'outdoor', cfg,
         refs: {
           node: rig.node,
           pan: rig.pan,
@@ -525,6 +522,11 @@ const main = async () => {
           projector: rig.projector,
           projectorU: rig.projectorU,
           projectorV: rig.projectorV,
+          get groundY() { return rig.groundY; },
+          get maxDistanceM() { return cfg.maxDistanceM ?? 35; },
+          set maxDistanceM(v) { cfg.maxDistanceM = v; },
+          get phase() { return rig.phase; },
+          set phase(v) { rig.phase = v; },
         },
         rebuild: () => {
           const parent = rig.tilt;
@@ -537,45 +539,54 @@ const main = async () => {
       });
 
       // add to UI dropdown immediately
-      try {
-        const pick = document.querySelector('#fov-panel select');
-        if (pick && ![...pick.options].some(o => o.value === id)) {
-          const o = document.createElement('option');
-          o.value = id; o.textContent = label;
-          pick.appendChild(o);
-        }
-      } catch {}
+      const pick = document.querySelector('#fov-panel select');
+      if (pick && ![...pick.options].some(o => o.value === id)) {
+        const o = document.createElement('option'); o.value = id; o.textContent = label; pick.appendChild(o);
+      }
     }
     log(`Spawned ${outdoorCams.length} outdoor FOV rig(s)`);
   }
-  // fire-and-forget; don't block UI
   spawnOutdoorCamsFromTags().catch(e => console.warn('[SECAM] outdoor spawn error', e));
 
   /* --------------- Visibility + projectors --------------- */
   let viewerPos = new THREE.Vector3();
+
+  // CAFETERIA ONLY uses gating
+  let mode = mpSdk.Mode.Mode.INSIDE;
+  mpSdk.Mode.current.subscribe(m => { mode = m; updateCafVisibility(); showOutdoorsForMode(); });
+
+  function showOutdoorsForMode() {
+    // outdoor frusta visible in all modes including FLOORPLAN
+    for (const entry of rigs.values()) {
+      if (entry.type === 'outdoor') entry.refs.node.obj3D.visible = true;
+    }
+  }
+
   mpSdk.Camera.pose.subscribe(p => {
     viewerPos.set(p.position.x, p.position.y, p.position.z);
   });
 
-  let mode = mpSdk.Mode.Mode.INSIDE;
-  mpSdk.Mode.current.subscribe(m => { mode = m; });
-
-  // Room.current (for cafeteria gating)
+  // Room.current (robust) for cafeteria gating
   let currentRooms = new Set();
   mpSdk.Room.current.subscribe((payload) => {
     try {
-      const list =
-        Array.isArray(payload) ? payload :
-        (payload && typeof payload[Symbol.iterator] === 'function') ? Array.from(payload) :
-        (payload && Array.isArray(payload.ids)) ? payload.ids :
-        [];
+      let list = [];
+      if (Array.isArray(payload)) list = payload;
+      else if (payload && typeof payload[Symbol.iterator] === 'function') list = Array.from(payload);
+      else if (payload && Array.isArray(payload.ids)) list = payload.ids;
       currentRooms = new Set(list);
-    } catch {}
+      if (DEBUG) log('Room.current IDs:', [...currentRooms]);
+      updateCafVisibility();
+    } catch (err) {
+      console.warn('[SECAM] Room.current handler error', err, payload);
+    }
   });
 
   let currentSweepRoomId = null;
   mpSdk.Sweep.current.subscribe((sw) => {
-    currentSweepRoomId = sw?.roomInfo?.id || null;
+    currentSweepRoomId = (sw && sw.roomInfo && sw.roomInfo.id) ? sw.roomInfo.id : null;
+    if (DEBUG) log('Sweep.current room:', currentSweepRoomId, 'sweepId:', sw && sw.sid);
+    updateCafVisibility();
   });
 
   async function raycastFirst(origin, direction, maxDist) {
@@ -591,11 +602,13 @@ const main = async () => {
     return null;
   }
 
-  async function updateVisibility() {
-    // Cafeteria: room/sweep + distance + LOS gates
+  async function updateCafVisibility() {
+    // Floorplan always allowed for cafeteria rig
     if (mode === mpSdk.Mode.Mode.FLOORPLAN && SHOW_IN_FLOORPLAN) {
       rootNode.obj3D.visible = true; return;
     }
+
+    // room / sweep gating
     let inTargetRoom = true;
     if (USE_SWEEP_GATE && currentSweepRoomId) {
       inTargetRoom = (currentSweepRoomId === BOUND_ROOM_ID);
@@ -607,9 +620,10 @@ const main = async () => {
     const camPos = rootNode.obj3D.getWorldPosition(new THREE.Vector3());
     const dist = camPos.distanceTo(viewerPos);
     const maxDist = rigs.get('cafeteria')?.cfg?.maxDistanceM ?? 25;
+    if (DEBUG) log('Distance to cam (m):', dist.toFixed(2));
     if (dist > maxDist) { rootNode.obj3D.visible = false; return; }
 
-    // LOS gate toward far-plane center
+    // LOS gate: aim at far-plane center
     const fr = frustumGroup?.userData?.farRect;
     if (fr) {
       const centerLocal = new THREE.Vector3().add(fr[0]).add(fr[1]).add(fr[2]).add(fr[3]).multiplyScalar(0.25);
@@ -621,23 +635,16 @@ const main = async () => {
         const hit = await raycastFirst(viewerPos, dir, len);
         const hitDist = hit?.distance ?? Number.POSITIVE_INFINITY;
         const blocked = !!hit?.hit && hitDist < (len - 0.05);
+        if (DEBUG) log('LOS blocked?', blocked, 'hitDist:', hitDist?.toFixed?.(2), 'len:', len.toFixed(2));
         if (blocked) { rootNode.obj3D.visible = false; return; }
       }
     }
+
     rootNode.obj3D.visible = true;
   }
 
-  // Outdoor: always visible (depthTest handles occlusion through walls)
-  async function updateOutdoorCamVisibility(rig) {
-    if (!rig?.node) return;
-    if (mode === mpSdk.Mode.Mode.FLOORPLAN && SHOW_IN_FLOORPLAN) {
-      rig.node.obj3D.visible = true; return;
-    }
-    rig.node.obj3D.visible = true;
-  }
-
-  // --- Cafeteria projector update
-  async function updateProjector() {
+  // Cafeteria projector
+  async function updateCafProjector() {
     if (!rootNode.obj3D.visible) { projector.mesh.visible = false; return; }
 
     const nearRect = frustumGroup.userData.nearRect;
@@ -696,12 +703,10 @@ const main = async () => {
     projector.geom.computeVertexNormals();
   }
 
-  // --- Outdoor projector (robust)
+  // Outdoor projector (robust) — clamps to geometry & skips bad samples
   async function updateOutdoorProjector(rig) {
     const frustum = (typeof rig.frustum === 'function' ? rig.frustum() : rig.frustum);
     if (!rig?.node || !frustum || !rig?.projector) return;
-
-    if (!rig.node.obj3D.visible) { rig.projector.visible = false; return; }
 
     const nearRect = frustum.userData.nearRect;
     const farRect  = frustum.userData.farRect;
@@ -723,6 +728,7 @@ const main = async () => {
 
     const worldPts = new Array(nearGrid.length);
     let drawn = 0;
+
     for (let i = 0; i < nearGrid.length; i++) {
       const nW = rig.tilt.localToWorld(nearGrid[i].clone());
       const fW = rig.tilt.localToWorld(farGrid[i].clone());
@@ -732,19 +738,13 @@ const main = async () => {
       const dir = seg.clone().normalize();
 
       let hit = null;
-      try {
-        hit = await mpSdk.Scene.raycast(
-          { x:nW.x, y:nW.y, z:nW.z },
-          { x:dir.x, y:dir.y, z:dir.z },
-          len
-        );
-      } catch {}
+      try { hit = await mpSdk.Scene.raycast({ x:nW.x, y:nW.y, z:nW.z }, { x:dir.x, y:dir.y, z:dir.z }, len); } catch {}
 
       let wp = null;
       if (hit?.hit) {
         wp = new THREE.Vector3(hit.position.x, hit.position.y, hit.position.z);
       } else {
-        const floorY = 0;
+        const floorY = (rig.groundY ?? 0.0);
         const t = (floorY - nW.y) / (fW.y - nW.y);
         if (Number.isFinite(t) && t >= 0 && t <= 1) wp = nW.clone().addScaledVector(seg, t);
       }
@@ -771,19 +771,20 @@ const main = async () => {
     }
     for (let i = k; i < pos.length; i++) pos[i] = 0;
 
-    if (k === 0 || drawn === 0) {
-      rig.projector.visible = false;
-      rig.projector.geometry.attributes.position.needsUpdate = true;
-      return;
-    }
-    rig.projector.visible = true;
+    rig.projector.visible = (k > 0 && drawn > 0);
     rig.projector.geometry.attributes.position.needsUpdate = true;
-    rig.projector.geometry.computeVertexNormals();
+    if (rig.projector.visible) rig.projector.geometry.computeVertexNormals();
   }
 
-  // animate cafeteria sweep + outdoor sweep + projectors
+  // === Outdoor visibility (always on) ===
+  function forceOutdoorVisible() {
+    for (const e of rigs.values()) {
+      if (e.type === 'outdoor') e.refs.node.obj3D.visible = true;
+    }
+  }
+
+  // === Animation loop ===
   let phase = 0, last = performance.now();
-  const outPhases = new Map(); // rigId -> phase
   async function animate(now) {
     const dt = (now - last)/1000; last = now;
 
@@ -794,38 +795,33 @@ const main = async () => {
     phase += yawSpeed * dt;
     panPivot.rotation.y = yawCenter + Math.sin(phase) * yawAmp;
 
-    // outdoor pan sweep (per rig; YAW slider is the center)
-    for (const [id, entry] of rigs) {
-      if (entry.type !== 'outdoor') continue;
-      const cfg = entry.cfg || {};
-      const refs = entry.refs || {};
-      const ampDeg = (cfg.sweepDeg ?? CFG.sweepDeg ?? 90) * 0.5;
-      const spdDeg = (cfg.yawSpeedDeg ?? 10);
-      const center = deg2rad(cfg.yawDeg ?? 0);
-      const amp    = deg2rad(ampDeg);
-      const spd    = deg2rad(spdDeg);
+    await updateCafProjector();
 
-      const p = (outPhases.get(id) ?? 0) + spd * dt;
-      outPhases.set(id, p);
-      if (refs.pan) refs.pan.rotation.y = center + Math.sin(p) * amp;
-    }
-
-    // projectors + vis; guard against missing function so loop never dies
-    try { if (typeof updateProjector === 'function') await updateProjector(); } catch (e) { console.warn('[SECAM] updateProjector error', e); }
-    const tasks = [];
+    // Outdoor per-rig sweep + projector
+    const jobs = [];
     for (const entry of rigs.values()) {
-      if (entry.type === 'outdoor') {
-        tasks.push(updateOutdoorProjector(entry.refs), updateOutdoorCamVisibility(entry.refs));
-      }
+      if (entry.type !== 'outdoor') continue;
+      const c = entry.cfg, r = entry.refs;
+      const center = deg2rad(c.yawDeg ?? 0);
+      const amp    = deg2rad((c.sweepDeg ?? 90) * 0.5);
+      const spd    = deg2rad(c.yawSpeedDeg ?? 10);
+      r.phase = (r.phase || 0) + spd * dt;
+      r.pan.rotation.y = center + Math.sin(r.phase) * amp;
+
+      jobs.push(updateOutdoorProjector(r).catch(()=>{}));
     }
-    await Promise.allSettled(tasks);
+    await Promise.allSettled(jobs);
+
+    // keep outdoor visible in any mode
+    forceOutdoorVisible();
 
     requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
 
-  // initial visibility check for cafeteria
-  updateVisibility();
+  // initial visibility passes
+  updateCafVisibility();
+  showOutdoorsForMode();
 };
 
 main().catch(console.error);
