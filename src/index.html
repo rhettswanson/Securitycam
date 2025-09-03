@@ -3,13 +3,27 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Matterport Security Camera Example</title>
+  <title>Ark Camera ID</title>
+
+  <!-- Optional: still fine to keep -->
+  <script>
+    window.MP_SDK_CONFIG = { assetBase: '/Securitycam/' };
+  </script>
+
   <style>
     body { margin: 0; }
     matterport-viewer { width: 100vw; height: 100vh; display: block; }
   </style>
 </head>
 <body>
-  <matterport-viewer m="1ghABoaBFPZ" application-key="akqd0dp3hr9wz4eu70zd1rsab" play="1" qs="1"></matterport-viewer>
+  <matterport-viewer
+    m="1ghABoaBFPZ"
+    application-key="akqd0dp3hr9wz4eu70zd1rsab"
+    play="1"
+    qs="1"
+    asset-base="/Securitycam/">
+    <!-- If you prefer, you can use the absolute URL:
+         asset-base="https://rhettswanson.github.io/Securitycam/" -->
+  </matterport-viewer>
 </body>
 </html>
