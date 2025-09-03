@@ -31,7 +31,8 @@ const CFG = {
   // Projector (indoor fallback floor)
   floorY: 0.4,
   footprintOpacity: 0.18,
-  projectorGrid: { u: 20, v: 12 },
+  // ↓↓↓ BIG WIN: fewer rays
+  projectorGrid: { u: 12, v: 8 },
 
   // Stylized body colors
   camText: '#f59e0b',
@@ -210,7 +211,7 @@ function buildStylizedCamera(THREE) {
     geom.computeVertexNormals(); g.add(new THREE.Mesh(geom, mDecal));
   }
 
-  // details
+  // details…
   const lip = new THREE.Mesh(new THREE.BoxGeometry((wBack+wFront)/2*0.98, 0.014, L*0.88),
                              new THREE.MeshLambertMaterial({ color: 0xffffff }));
   lip.position.y = -Math.min(hBack,hFront)*0.40; lip.position.z = -L*0.05; g.add(lip);
@@ -276,8 +277,8 @@ function makeFovOnlyRig(THREE, sceneObject, cfg, color) {
   const frustum = buildTruncatedFrustum(THREE, { ...CFG, ...cfg, fovColor: (color != null ? color : CFG.fovColor) });
   tilt.add(frustum);
 
-  // projector mesh
-  const u = 20, v = 12, tris = (u-1)*(v-1)*2;
+  // projector mesh — BIG WIN: 12×8
+  const u = 12, v = 8, tris = (u-1)*(v-1)*2;
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(tris*9), 3));
   const mat = new THREE.MeshBasicMaterial({
@@ -360,9 +361,9 @@ function makePanel(selectedId) {
     };
 
     // shared optics
-    row('HFOV',  ()=>cfg.hFovDeg, v=>{cfg.hFovDeg=v; rig.rebuild();}, 1,'°',10,120);
-    row('NEAR',  ()=>cfg.near,    v=>{cfg.near=v;    rig.rebuild();}, 0.01,'',0.02,1,2);
-    row('FAR',   ()=>cfg.far,     v=>{cfg.far=v;     rig.rebuild();}, 1,'',5,120);
+    row('HFOV',  ()=>cfg.hFovDeg, v=>{cfg.hFovDeg=v; rig.rebuild(); rig.refs.dirty = true;}, 1,'°',10,120);
+    row('NEAR',  ()=>cfg.near,    v=>{cfg.near=v;    rig.rebuild(); rig.refs.dirty = true;}, 0.01,'',0.02,1,2);
+    row('FAR',   ()=>cfg.far,     v=>{cfg.far=v;     rig.rebuild(); rig.refs.dirty = true;}, 1,'',5,120);
 
     if (rig.type === 'indoor') {
       row('SWEEP', ()=>CFG.sweepDeg,     v=>{CFG.sweepDeg=v;}, 2,'°',10,170);
@@ -371,11 +372,10 @@ function makePanel(selectedId) {
       row('MaxDist', ()=>cfg.maxDistanceM || 25, v=>{ cfg.maxDistanceM=v; }, 1,'m',5,80);
     } else {
       // Outdoor: fixed position (no auto-pan), but aim with YAW/TILT
-      row('YAW',   ()=>cfg.yawDeg || 0,  v=>{ cfg.yawDeg=v; rig.refs.pan.rotation.y = deg2rad(v); }, 1,'°',-180,180);
-      row('TILT',  ()=>cfg.tiltDeg||10,  v=>{ cfg.tiltDeg=v; rig.applyTilt(); }, 1,'°',0,85);
+      row('YAW',   ()=>cfg.yawDeg || 0,  v=>{ cfg.yawDeg=v; rig.refs.pan.rotation.y = deg2rad(v); rig.refs.dirty = true; }, 1,'°',-180,180);
+      row('TILT',  ()=>cfg.tiltDeg||10,  v=>{ cfg.tiltDeg=v; rig.applyTilt(); rig.refs.dirty = true; }, 1,'°',0,85);
       row('MaxDist', ()=>cfg.maxDistanceM || 35,
-          v=>{ cfg.maxDistanceM=v; if (rig.refs && ('maxDistanceM' in rig.refs)) rig.refs.maxDistanceM = v; },
-          1,'m',5,100);
+          v=>{ cfg.maxDistanceM=v; if ('maxDistanceM' in rig.refs) rig.refs.maxDistanceM = v; }, 1,'m',5,100);
     }
   }
 
@@ -459,7 +459,6 @@ const main = async () => {
     rebuild: () => {
       tiltPivot.remove(frustumGroup);
       frustumGroup.traverse && frustumGroup.traverse(o => { if (o.geometry && o.geometry.dispose) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
-      // sync shared optics
       CFG.hFovDeg = cafeteriaCfg.hFovDeg; CFG.near = cafeteriaCfg.near; CFG.far = cafeteriaCfg.far;
       frustumGroup = buildTruncatedFrustum(THREE, CFG);
       tiltPivot.add(frustumGroup);
@@ -495,7 +494,6 @@ const main = async () => {
 
   async function getTagsWithTimeout(ms) {
     ms = (ms || 1500);
-    // prefer new API if available
     try {
       if (mpSdk.Tag && mpSdk.Tag.data && mpSdk.Tag.data.subscribe) {
         const tagDataPromise = new Promise(resolve => {
@@ -514,7 +512,6 @@ const main = async () => {
         if (viaNew) return viaNew;
       }
     } catch (e) {}
-    // fallback
     try { return await mpSdk.Mattertag.getData(); } catch (e) { return []; }
   }
 
@@ -554,6 +551,8 @@ const main = async () => {
           get groundY(){ return rig.groundY; },
           get maxDistanceM(){ return cfg.maxDistanceM || 35; },
           set maxDistanceM(v){ cfg.maxDistanceM = v; },
+          dirty: true,   // compute once after spawn
+          _busy: false,  // throttle async updates
         },
         rebuild: () => {
           const parent = rig.tilt;
@@ -669,8 +668,12 @@ const main = async () => {
     rootNode.obj3D.visible = true;
   }
 
+  // --- Cafeteria projector (throttled ~6–7 Hz) ---
+  let cafTimer = 0;
+  let cafBusy = false;
   async function updateProjector() {
-    if (!rootNode.obj3D.visible) { projector.mesh.visible = false; return; }
+    if (cafBusy || !rootNode.obj3D.visible) { if (projector.mesh) projector.mesh.visible = rootNode.obj3D.visible; return; }
+    cafBusy = true;
 
     const nearRect = frustumGroup.userData.nearRect;
     const farRect  = frustumGroup.userData.farRect;
@@ -695,7 +698,7 @@ const main = async () => {
       const nW = tiltPivot.localToWorld(nearGrid[i].clone());
       const fW = tiltPivot.localToWorld(farGrid[i].clone());
       const dir = new THREE.Vector3().subVectors(fW, nW);
-      const len = dir.length(); if (len <= 1e-4) { projector.mesh.visible=false; return; }
+      const len = dir.length(); if (len <= 1e-4) { projector.mesh.visible=false; cafBusy=false; return; }
       dir.normalize();
 
       let hit = null;
@@ -705,14 +708,16 @@ const main = async () => {
         worldPts[i] = new THREE.Vector3(hit.position.x, hit.position.y, hit.position.z);
       } else {
         const t = ((CFG.floorY || 0) - nW.y) / (fW.y - nW.y);
-        if (!(t >= 0 && t <= 1 && isFinite(t))) { projector.mesh.visible = false; return; }
+        if (!(t >= 0 && t <= 1 && isFinite(t))) { projector.mesh.visible = false; cafBusy=false; return; }
         worldPts[i] = new THREE.Vector3().copy(nW).addScaledVector(new THREE.Vector3().subVectors(fW, nW), t);
       }
     }
     projector.mesh.visible = true;
 
     const arr = projector.geom.attributes.position.array;
-    let k = 0;
+    let k = 0; // floats written
+    const write = (p)=>{ arr[k++]=p.x; arr[k++]=p.y+0.003; arr[k++]=p.z; };
+
     for (let yi=0; yi<v-1; yi++){
       for (let xi=0; xi<u-1; xi++){
         const idx = yi*u + xi;
@@ -720,26 +725,28 @@ const main = async () => {
         const p10 = rootNode.obj3D.worldToLocal(worldPts[idx + 1].clone());
         const p01 = rootNode.obj3D.worldToLocal(worldPts[idx + u].clone());
         const p11 = rootNode.obj3D.worldToLocal(worldPts[idx + u + 1].clone());
-        const write = (p)=>{ arr[k++]=p.x; arr[k++]=p.y+0.003; arr[k++]=p.z; };
         write(p00); write(p10); write(p11);
         write(p00); write(p11); write(p01);
       }
     }
+    projector.geom.setDrawRange(0, (k/3)); // vertices
     projector.geom.attributes.position.needsUpdate = true;
-    projector.geom.computeVertexNormals();
+    // no normals for MeshBasicMaterial
+
+    cafBusy = false;
   }
 
-  // Robust outdoor projector: stop on first hit; skip missing cells
+  // --- Outdoor projector: recompute only when dirty ---
   async function updateOutdoorProjector(entry) {
     const rig = entry.refs;
-    if (!rig || !rig.node || !rig.frustum) return;
-    if (!rig.node.obj3D.visible) { if (rig.projector) rig.projector.visible = false; return; }
-    const frustum = (typeof rig.frustum === 'function' ? rig.frustum() : rig.frustum);
-    if (!frustum) return;
+    if (!rig || !rig.node || !rig.frustum || !rig.projector) return;
+    if (rig._busy || !rig.dirty) return;
+    rig._busy = true;
 
+    const frustum = (typeof rig.frustum === 'function' ? rig.frustum() : rig.frustum);
     const nearRect = frustum.userData.nearRect;
     const farRect  = frustum.userData.farRect;
-    const u = rig.projectorU || 20, v = rig.projectorV || 12;
+    const u = rig.projectorU || 12, v = rig.projectorV || 8;
 
     const nearGrid = [], farGrid = [];
     for (let yi=0; yi<v; yi++){
@@ -756,8 +763,6 @@ const main = async () => {
     }
 
     const worldPts = new Array(nearGrid.length);
-    let filled = 0;
-
     for (let i=0;i<nearGrid.length;i++){
       const nW = rig.tilt.localToWorld(nearGrid[i].clone());
       const fW = rig.tilt.localToWorld(farGrid[i].clone());
@@ -774,16 +779,16 @@ const main = async () => {
       } else {
         const floorY = (rig.groundY != null ? rig.groundY : 0.0);
         const t = (floorY - nW.y) / (fW.y - nW.y);
-        if (isFinite(t) && t >= 0 && t <= 1) {
-          wp = nW.clone().addScaledVector(seg, t);
-        }
+        if (isFinite(t) && t >= 0 && t <= 1) wp = nW.clone().addScaledVector(seg, t);
       }
-      if (wp) { worldPts[i] = wp; filled++; }
+      if (wp) worldPts[i] = wp;
     }
 
     const geo = rig.projector.geometry;
     const pos = geo.attributes.position.array;
-    let k = 0;
+    let k = 0; // floats written
+    const write = (p)=>{ pos[k++]=p.x; pos[k++]=p.y+0.003; pos[k++]=p.z; };
+
     for (let yi=0; yi<v-1; yi++){
       for (let xi=0; xi<u-1; xi++){
         const idx = yi*u + xi;
@@ -794,25 +799,18 @@ const main = async () => {
         if (!p00 || !p10 || !p01 || !p11) continue;
 
         const toLocal = p => rig.node.obj3D.worldToLocal(p.clone());
-        const write = p => { pos[k++] = p.x; pos[k++] = p.y + 0.003; pos[k++] = p.z; };
-
         write(toLocal(p00)); write(toLocal(p10)); write(toLocal(p11));
         write(toLocal(p00)); write(toLocal(p11)); write(toLocal(p01));
       }
     }
-    for (let i=k;i<pos.length;i++) pos[i]=0;
-
-    if (k === 0 || filled === 0) {
-      rig.projector.visible = false;
-      geo.attributes.position.needsUpdate = true;
-      return;
-    }
-    rig.projector.visible = true;
+    geo.setDrawRange(0, (k/3));               // vertices actually written
     geo.attributes.position.needsUpdate = true;
-    geo.computeVertexNormals();
+    rig.projector.visible = (k > 0);          // hide if nothing drawn
+    rig.dirty = false;
+    rig._busy = false;
   }
 
-  // animate cafeteria sweep + projectors
+  // animate cafeteria sweep + throttled updates
   let phase = 0, last = performance.now();
   async function animate(now) {
     const dt = (now - last)/1000; last = now;
@@ -824,14 +822,14 @@ const main = async () => {
     phase += yawSpeed * dt;
     panPivot.rotation.y = yawCenter + Math.sin(phase) * yawAmp;
 
-    await updateProjector();
+    // cafeteria footprint at ~6–7 Hz
+    cafTimer += dt;
+    if (cafTimer >= 0.15) { cafTimer = 0; updateProjector(); }
 
-    // update all outdoor projectors
-    const tasks = [];
+    // outdoor footprints only when dirty
     rigs.forEach(entry => {
-      if (entry.type === 'outdoor') tasks.push(updateOutdoorProjector(entry));
+      if (entry.type === 'outdoor') updateOutdoorProjector(entry);
     });
-    await Promise.allSettled(tasks);
 
     requestAnimationFrame(animate);
   }
