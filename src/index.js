@@ -94,6 +94,8 @@ function buildTruncatedFrustum(THREE, cfg) {
   const edgeMat = new THREE.MeshBasicMaterial({
     color: cfg.fovColor ?? 0x00ff00, transparent: true, opacity: 0.95,
     depthTest: true, depthWrite: false
+  ,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
   });
 
   group.add(tubeBetween(THREE, n0, f0, cfg.edgeRadius ?? 0.016, edgeMat));
@@ -126,11 +128,16 @@ function buildTruncatedFrustum(THREE, cfg) {
   const fillMat = new THREE.MeshBasicMaterial({
     color: cfg.fovColor ?? 0x00ff00, transparent: true, opacity: cfg.fillOpacity ?? 0.08,
     side: THREE.DoubleSide, depthTest: true, depthWrite: false
+  ,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
   });
   const mesh = new THREE.Mesh(faces, fillMat);
   group.add(mesh);
 
-  group.userData = { nearRect: [n0,n1,n2,n3], farRect: [f0,f1,f2,f3] };
+  // expose materials for distance-fade & remember base opacities
+  edgeMat.userData = { baseOpacity: edgeMat.opacity };
+  fillMat.userData = { baseOpacity: fillMat.opacity };
+  group.userData = { nearRect: [n0,n1,n2,n3], farRect: [f0,f1,f2,f3], materials: { edge: edgeMat, fill: fillMat } };
   return group;
 }
 
@@ -332,6 +339,9 @@ function makePanel(selectedId = 'cafeteria') {
       row('TILT',  ()=>CFG.tiltDeg,    v=>{ CFG.tiltDeg=v; rig.applyTilt(); }, 1,'°',0,85);
       row('MaxDist', ()=>cfg.maxDistanceM ?? 25, v=>{ cfg.maxDistanceM=v; }, 1,'m',5,80);
     } else { // outdoor
+      row('SWEEP', ()=>cfg.sweepDeg ?? CFG.sweepDeg, v=>{ cfg.sweepDeg=v; }, 2,'°',10,170);
+      row('YawSpd', ()=>cfg.yawSpeedDeg ?? CFG.yawSpeedDeg ?? 10, v=>{ cfg.yawSpeedDeg=v; }, 1,'°/s',1,60);
+
       row('YAW',   ()=>cfg.yawDeg, v=>{ cfg.yawDeg=v; refs.pan.rotation.y = deg2rad(v); }, 1,'°',-180,180);
       row('TILT',  ()=>cfg.tiltDeg, v=>{ cfg.tiltDeg=v; rig.applyTilt(); }, 1,'°',0,85);
       // update cfg AND refs proxy so the gates react immediately
@@ -440,14 +450,18 @@ const main = async () => {
   function parseOutdoorCfgFromTag(tag) {
     const txt = `${tag.label || ''}\n${tag.description || ''}`;
     return {
-      position: { x: tag.anchorPosition.x, y: tag.anchorPosition.y, z: tag.anchorPosition.z },
+            position: { x: tag.anchorPosition.x, y: tag.anchorPosition.y, z: tag.anchorPosition.z },
       hFovDeg: pickNum(txt, /\bhfov\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 32),
       near:    pickNum(txt, /\bnear\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 0.12),
       far:     pickNum(txt, /\bfar\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 22),
       yawDeg:  pickNum(txt, /\byaw\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 0),
       tiltDeg: pickNum(txt, /\btilt\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 10),
+      sweepDeg: pickNum(txt, /\bsweep\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, CFG.sweepDeg ?? 90),
+      yawSpeedDeg: pickNum(txt, /\byawspeed\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, CFG.yawSpeedDeg ?? 10),
       maxDistanceM: pickNum(txt, /\bmaxdist\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 35),
+      fadeStartM: pickNum(txt, /\bfadestart\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, null),
       aspect: 16/9,
+
     };
   }
 
@@ -700,169 +714,67 @@ const main = async () => {
   async function updateOutdoorCamVisibility(rig) {
     if (!rig?.node || !rig?.tilt) return;
 
-    // Distance gate
+    // Show in FLOORPLAN no matter what (parity with cafeteria)
+    if (mode === mpSdk.Mode.Mode.FLOORPLAN && SHOW_IN_FLOORPLAN) {
+      rig.node.obj3D.visible = true;
+      return;
+    }
+
+    // throttle checks to ~6–7 Hz per rig
+    const now = performance.now();
+    if (rig._visBusy || (rig._nextVis && now < rig._nextVis)) return;
+    rig._visBusy = true;
+    rig._nextVis = now + 150;
+
+    // Distance + soft fade
     const camPos = rig.node.obj3D.getWorldPosition(new THREE.Vector3());
-    const dist   = camPos.distanceTo(viewerPos);
-    const maxD   = rig.maxDistanceM ?? 35; // via refs proxy
-    if (dist > maxD) { rig.node.obj3D.visible = false; return; }
+    const d = camPos.distanceTo(viewerPos);
+    const maxD = rig.maxDistanceM ?? 35;
+    const fadeStart = Math.max(0, rig.fadeStartM ?? (maxD - 8));
 
-    // No LOS gating
-    if (USE_OUTDOOR_LOS === 'off') { rig.node.obj3D.visible = true; return; }
+    // fade edges/fill as you approach max distance
+    const frustum = (typeof rig.frustum === 'function' ? rig.frustum() : rig.frustum);
+    const mats = frustum?.userData?.materials;
+    const edgeMat = mats?.edge;
+    const fillMat = mats?.fill;
+    if (edgeMat && fillMat) {
+      const t = (d <= fadeStart) ? 0 : (d >= maxD ? 1 : (d - fadeStart) / Math.max(1e-6, (maxD - fadeStart)));
+      const clamp = x => Math.min(1, Math.max(0, x));
+      const eBase = edgeMat.userData?.baseOpacity ?? 0.95;
+      const fBase = fillMat.userData?.baseOpacity ?? (CFG.fillOpacity ?? 0.08);
+      edgeMat.opacity = THREE.MathUtils.lerp(eBase, 0.0, clamp(t));
+      fillMat.opacity = THREE.MathUtils.lerp(fBase, 0.0, clamp(t));
+    }
 
-    // LOS target
+    // hard cutoff
+    if (d > maxD) { rig.node.obj3D.visible = false; rig._visBusy = false; return; }
+
+    // LOS gating
+    if (USE_OUTDOOR_LOS === 'off') { rig.node.obj3D.visible = true; rig._visBusy = false; return; }
+
     let target;
     if (USE_OUTDOOR_LOS === 'cam') {
-      target = camPos; // viewer must see the camera head
-    } else { // 'far' – original far-plane center
-      const frustum = (typeof rig.frustum === 'function' ? rig.frustum() : rig.frustum);
+      target = camPos; // require visibility of the head itself
+    } else {
       const fr = frustum?.userData?.farRect;
-      if (!fr) { rig.node.obj3D.visible = true; return; }
+      if (!fr) { rig.node.obj3D.visible = true; rig._visBusy = false; return; }
       const centerLocal = new THREE.Vector3().add(fr[0]).add(fr[1]).add(fr[2]).add(fr[3]).multiplyScalar(0.25);
       target = rig.tilt.localToWorld(centerLocal.clone());
     }
 
     const dir = new THREE.Vector3().subVectors(target, viewerPos);
     const len = dir.length();
-    if (len <= 0.001) { rig.node.obj3D.visible = false; return; }
+    if (len <= 1e-3) { rig.node.obj3D.visible = false; rig._visBusy = false; return; }
     dir.normalize();
 
-    const hit = await raycastFirst(viewerPos, dir, len); // safe even if SDK has no raycast
-    if (!hit || !hit.hit) { rig.node.obj3D.visible = true; return; }
-
-    const blocked = hit.distance < (len - 0.05);
-    rig.node.obj3D.visible = !blocked;
-  }
-
-  // 🔧 Robust outdoor projector: skip bad samples, render what we can
-  async function updateOutdoorProjector(rig) {
-    const frustum = (typeof rig.frustum === 'function' ? rig.frustum() : rig.frustum);
-    if (!rig?.node || !frustum || !rig?.projector) return;
-
-    if (!rig.node.obj3D.visible) { rig.projector.visible = false; return; }
-
-    const nearRect = frustum.userData.nearRect;
-    const farRect  = frustum.userData.farRect;
-    const u = rig.projectorU ?? 20, v = rig.projectorV ?? 12;
-
-    // sample near/far grids
-    const nearGrid = [], farGrid = [];
-    for (let yi = 0; yi < v; yi++) {
-      const ty = yi / (v - 1);
-      const nA = new THREE.Vector3().lerpVectors(nearRect[0], nearRect[3], ty);
-      const nB = new THREE.Vector3().lerpVectors(nearRect[1], nearRect[2], ty);
-      const fA = new THREE.Vector3().lerpVectors(farRect[0],  farRect[3],  ty);
-      const fB = new THREE.Vector3().lerpVectors(farRect[1],  farRect[2],  ty);
-      for (let xi = 0; xi < u; xi++) {
-        const tx = xi / (u - 1);
-        nearGrid.push(new THREE.Vector3().lerpVectors(nA, nB, tx));
-        farGrid .push(new THREE.Vector3().lerpVectors(fA, fB, tx));
-      }
+    try {
+      const hit = await raycastFirst(viewerPos, dir, len);
+      rig.node.obj3D.visible = !(hit?.hit && hit.distance < (len - 0.05));
+    } catch {
+      rig.node.obj3D.visible = true;
     }
 
-    // project each ray, SKIP bad samples (do not abort)
-    const worldPts = new Array(nearGrid.length);
-    let drawnSamples = 0;
-
-    for (let i = 0; i < nearGrid.length; i++) {
-      const nW = rig.tilt.localToWorld(nearGrid[i].clone());
-      const fW = rig.tilt.localToWorld(farGrid[i].clone());
-      const seg = new THREE.Vector3().subVectors(fW, nW);
-      const len = seg.length();
-      if (len <= 1e-3) continue;
-      const dir = seg.clone().normalize();
-
-      let hit = null;
-      try {
-        hit = await mpSdk.Scene.raycast(
-          { x:nW.x, y:nW.y, z:nW.z },
-          { x:dir.x, y:dir.y, z:dir.z },
-          len
-        );
-      } catch {}
-
-      let wp = null;
-      if (hit?.hit) {
-        wp = new THREE.Vector3(hit.position.x, hit.position.y, hit.position.z);
-      } else {
-        // ground-plane fallback
-        const floorY = (rig.groundY ?? 0.0);
-        const t = (floorY - nW.y) / (fW.y - nW.y);
-        if (Number.isFinite(t) && t >= 0 && t <= 1) {
-          wp = nW.clone().addScaledVector(seg, t);
-        }
-      }
-      if (wp) { worldPts[i] = wp; drawnSamples++; } // keep only valid points
-    }
-
-    const pos = rig.projector.geometry.attributes.position.array;
-    let k = 0;
-    for (let yi = 0; yi < v - 1; yi++) {
-      for (let xi = 0; xi < u - 1; xi++) {
-        const idx = yi * u + xi;
-        const p00 = worldPts[idx];
-        const p10 = worldPts[idx + 1];
-        const p01 = worldPts[idx + u];
-        const p11 = worldPts[idx + u + 1];
-        if (!p00 || !p10 || !p01 || !p11) continue; // skip cell with missing corner(s)
-
-        const toLocal = p => rig.node.obj3D.worldToLocal(p.clone());
-        const write = p => { pos[k++] = p.x; pos[k++] = p.y + 0.003; pos[k++] = p.z; };
-
-        write(toLocal(p00)); write(toLocal(p10)); write(toLocal(p11));
-        write(toLocal(p00)); write(toLocal(p11)); write(toLocal(p01));
-      }
-    }
-    // clear any leftover vertices so no stale triangles remain
-    for (let i = k; i < pos.length; i++) pos[i] = 0;
-
-    // visibility: only show if we actually drew something
-    if (k === 0 || drawnSamples === 0) {
-      rig.projector.visible = false;
-      rig.projector.geometry.attributes.position.needsUpdate = true;
-      return;
-    }
-
-    rig.projector.visible = true;
-    rig.projector.geometry.attributes.position.needsUpdate = true;
-    rig.projector.geometry.computeVertexNormals();
-  }
-
-  // animate cafeteria sweep + all projectors + periodic vis checks
-  let phase = 0, last = performance.now();
-  let visFrame = 0;
-  async function animate(now) {
-    const dt = (now - last)/1000; last = now;
-
-    // cafeteria pan sweep
-    const yawCenter = deg2rad(CFG.baseYawDeg);
-    const yawAmp    = deg2rad(CFG.sweepDeg) * 0.5;
-    const yawSpeed  = deg2rad(CFG.yawSpeedDeg);
-    phase += yawSpeed * dt;
-    panPivot.rotation.y = yawCenter + Math.sin(phase) * yawAmp;
-
-    await updateProjector();
-
-    // Update outdoor rigs safely
-    const tasks = [];
-    for (const entry of rigs.values()) {
-      if (entry.type === 'outdoor') {
-        tasks.push(
-          updateOutdoorProjector(entry.refs).catch(() => {}),
-          updateOutdoorCamVisibility(entry.refs).catch(() => {})
-        );
-      }
-    }
-    await Promise.allSettled(tasks);
-
-    if ((visFrame = (visFrame + 1) % 30) === 0) updateVisibility();
-    requestAnimationFrame(animate);
-  } // <-- close animate() exactly here
-
-  // start the loop once
-  requestAnimationFrame(animate);
-
-  // kick first vis check
-  updateVisibility();
-};
+    rig._visBusy = false;
+  };
 
 main().catch(console.error);
