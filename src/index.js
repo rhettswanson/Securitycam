@@ -126,7 +126,7 @@ function buildTruncatedFrustum(THREE, cfg) {
   const group = new THREE.Group();
 
   const n0 = new THREE.Vector3(-nHalfW, -nHalfH, -near);
-  const n1 = new THREE.VectorVector3 ? new THREE.Vector3( nHalfW, -nHalfH, -near) : new THREE.Vector3( nHalfW, -nHalfH, -near);
+  const n1 = new THREE.Vector3 ? new THREE.Vector3( nHalfW, -nHalfH, -near) : new THREE.Vector3( nHalfW, -nHalfH, -near);
   const n2 = new THREE.Vector3( nHalfW,  nHalfH, -near);
   const n3 = new THREE.Vector3(-nHalfW,  nHalfH, -near);
 
