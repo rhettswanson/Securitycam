@@ -494,9 +494,15 @@ const main = async () => {
       outdoorCams.push({ ...rig, cfg, tagSid: t.sid, label: t.label });
       await initOutdoorGround(rig);
 
+      // 👈 start outdoor node so it actually renders
+      rig.node.start();
+
+      const id = t.sid || `out-${outdoorCams.length}`;
+      const label = t.label || `Outdoor ${outdoorCams.length}`;
+
       registerRig({
-        id: t.sid || `out-${outdoorCams.length}`,
-        label: t.label || `Outdoor ${outdoorCams.length}`,
+        id,
+        label,
         type: 'outdoor',
         cfg,
         // Put everything the updater needs into refs
@@ -523,6 +529,15 @@ const main = async () => {
         applyTilt: () => { rig.tilt.rotation.x = -deg2rad(cfg.tiltDeg); },
       });
 
+      // 👈 add to UI dropdown immediately
+      try {
+        const pick = document.querySelector('#fov-panel select');
+        if (pick && ![...pick.options].some(o => o.value === id)) {
+          const o = document.createElement('option');
+          o.value = id; o.textContent = label;
+          pick.appendChild(o);
+        }
+      } catch {}
     }
     log(`Spawned ${outdoorCams.length} outdoor FOV rig(s)`);
   }
