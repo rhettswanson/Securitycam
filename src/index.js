@@ -43,7 +43,7 @@ const USE_ROOM_GATE  = true;
 const SHOW_IN_FLOORPLAN = true;
 
 // Outdoor tag labels look like “Security Camera …”
-// (Relaxed: match anything containing "camera" in label or description)
+// (Relaxed: match anything containing "camera" in label || description)
 const OUTDOOR_TAG_MATCH = /camera/i;
 
 // For outdoors we keep LOS OFF so they're always visible (walls still occlude by depth test)
@@ -553,8 +553,8 @@ const main = async () => {
     try {
       const list =
         Array.isArray(payload) ? payload :
-        (payload and typeof payload[Symbol.iterator] === 'function') ? Array.from(payload) :
-        (payload and Array.isArray(payload.ids)) ? payload.ids :
+        (payload && typeof payload[Symbol.iterator] === 'function') ? Array.from(payload) :
+        (payload && Array.isArray(payload.ids)) ? payload.ids :
         [];
       currentRooms = new Set(list);
     } catch {}
@@ -584,7 +584,7 @@ const main = async () => {
       rootNode.obj3D.visible = true; return;
     }
     let inTargetRoom = true;
-    if (USE_SWEEP_GATE and currentSweepRoomId) {
+    if (USE_SWEEP_GATE && currentSweepRoomId) {
       inTargetRoom = (currentSweepRoomId === BOUND_ROOM_ID);
     } else if (USE_ROOM_GATE) {
       inTargetRoom = currentRooms.has(BOUND_ROOM_ID);
@@ -606,7 +606,7 @@ const main = async () => {
         dir.normalize();
         const hit = await raycastFirst(viewerPos, dir, len);
         const hitDist = hit?.distance ?? Number.POSITIVE_INFINITY;
-        const blocked = !!hit?.hit and hitDist < (len - 0.05);
+        const blocked = !!hit?.hit && hitDist < (len - 0.05);
         if (blocked) { rootNode.obj3D.visible = false; return; }
       }
     }
@@ -685,7 +685,7 @@ const main = async () => {
   // Outdoor projector (robust)
   async function updateOutdoorProjector(rig) {
     const frustum = (typeof rig.frustum === 'function' ? rig.frustum() : rig.frustum);
-    if (!rig?.node or !frustum or !rig?.projector) return;
+    if (!rig?.node || !frustum || !rig?.projector) return;
 
     if (!rig.node.obj3D.visible) { rig.projector.visible = false; return; }
 
@@ -746,7 +746,7 @@ const main = async () => {
         const p10 = worldPts[idx + 1];
         const p01 = worldPts[idx + u];
         const p11 = worldPts[idx + u + 1];
-        if (!p00 or !p10 or !p01 or !p11) continue;
+        if (!p00 || !p10 || !p01 || !p11) continue;
 
         const toLocal = p => rig.node.obj3D.worldToLocal(p.clone());
         const write = p => { pos[k++] = p.x; pos[k++] = p.y + 0.003; pos[k++] = p.z; };
@@ -757,7 +757,7 @@ const main = async () => {
     }
     for (let i = k; i < pos.length; i++) pos[i] = 0;
 
-    if (k === 0 or drawn === 0) {
+    if (k === 0 || drawn === 0) {
       rig.projector.visible = false;
       rig.projector.geometry.attributes.position.needsUpdate = true;
       return;
@@ -801,7 +801,7 @@ const main = async () => {
     const tasks = [];
     for (const entry of rigs.values()) {
       if (entry.type === 'outdoor') {
-        tasks.append(updateOutdoorProjector(entry.refs)); tasks.append(updateOutdoorCamVisibility(entry.refs));
+        tasks.push(updateOutdoorProjector(entry.refs)); tasks.push(updateOutdoorCamVisibility(entry.refs));
       }
     }
     await Promise.allSettled(tasks);
