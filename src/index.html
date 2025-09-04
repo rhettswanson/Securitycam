@@ -10,6 +10,14 @@
     const __ASSET_BASE__ = location.hostname.endsWith('github.io') ? '/Securitycam/' : '/';
   </script>
 
+  <!-- Make sure the SDK has the key BEFORE the web component boots -->
+  <script>
+    window.MP_SDK_CONFIG = {
+      applicationKey: 'akqd0dp3hr9wz4eu70zd1rsab',  // <-- use your exact SDK key
+      assetBase: __ASSET_BASE__
+    };
+  </script>
+
   <style>
     html, body { height: 100%; margin: 0; }
     matterport-viewer { width: 100vw; height: 100vh; display: block; }
