@@ -1,5 +1,8 @@
 // index.js - Ark Camera ID (optimized + Admin Office defaults)
 
+/* public path: github.io uses /Securitycam/, custom domain uses / */
+__webpack_public_path__ = (location.hostname.endsWith('github.io') ? '/Securitycam/' : '/');
+
 // Import the viewer web component
 import '@matterport/webcomponent';
 
