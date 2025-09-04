@@ -1,13 +1,28 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ark Camera ID</title>
 
-  <!-- Optional: still fine to keep -->
+  <!-- Decide asset base for GitHub Project Pages (/Securitycam/) vs custom domain (/) -->
   <script>
-    window.MP_SDK_CONFIG = { assetBase: '/Securitycam/' };
+    (function () {
+      var base =
+        (location.hostname.endsWith('github.io') &&
+         location.pathname.startsWith('/Securitycam/'))
+          ? '/Securitycam/'
+          : '/';
+
+      // Used by the Matterport webcomponent before it boots
+      window.MP_SDK_CONFIG = { assetBase: base };
+
+      // Also set the attribute on the element once it's in the DOM
+      document.addEventListener('DOMContentLoaded', function () {
+        var el = document.querySelector('matterport-viewer');
+        if (el) el.setAttribute('asset-base', base);
+      });
+    })();
   </script>
 
   <style>
@@ -20,10 +35,7 @@
     m="1ghABoaBFPZ"
     application-key="akqd0dp3hr9wz4eu70zd1rsab"
     play="1"
-    qs="1"
-    asset-base="/Securitycam/">
-    <!-- If you prefer, you can use the absolute URL:
-         asset-base="https://rhettswanson.github.io/Securitycam/" -->
+    qs="1">
   </matterport-viewer>
 </body>
 </html>
