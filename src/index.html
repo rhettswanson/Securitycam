@@ -5,16 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ark Camera ID</title>
 
-  <!-- Compute asset base for both origins -->
   <script>
-    const __ASSET_BASE__ = location.hostname.endsWith('github.io') ? '/Securitycam/' : '/';
-  </script>
-
-  <!-- Ensure the SDK has the key BEFORE the component boots -->
-  <script>
+    // pick the right asset base for GH Pages vs custom domain
+    const ASSET_BASE = location.hostname.endsWith('github.io') ? '/Securitycam/' : '/';
+    // give the SDK your key before the component boots
     window.MP_SDK_CONFIG = {
-      applicationKey: 'akqd0dp3hr9wz4eu70zd1rsab',  // ← exact key from Matterport dev console
-      assetBase: __ASSET_BASE__
+      applicationKey: 'akqd0dp3hr9wz4eu70zd1rsab',
+      assetBase: ASSET_BASE
     };
   </script>
 
@@ -24,18 +21,18 @@
   </style>
 </head>
 <body>
-  <matterport-viewer>
+  <!-- all attributes INSIDE the start tag; exact model id below -->
+  <matterport-viewer
     id="mpv"
     m="1ghABoaBFPZ"
     application-key="akqd0dp3hr9wz4eu70zd1rsab"
     play="1"
-    qs="1"
+    qs="1">
   </matterport-viewer>
 
   <script>
-    // Apply the computed asset base after the element exists
-    document.getElementById('mpv').setAttribute('asset-base', __ASSET_BASE__);
+    // apply asset base now that the element exists
+    document.getElementById('mpv').setAttribute('asset-base', ASSET_BASE);
   </script>
-  <!-- HtmlWebpackPlugin injects the bundle -->
 </body>
 </html>
