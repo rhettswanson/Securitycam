@@ -1,2 +1,17 @@
-<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ark Camera ID</title><script>window.MP_SDK_CONFIG = { assetBase: '/Securitycam/' };</script><style>body { margin: 0; }
-    matterport-viewer { width: 100vw; height: 100vh; display: block; }</style><script defer="defer" src="./index_bundle.eb75949c2eade8d5f6da.js"></script></head><body><matterport-viewer m="1ghABoaBFPZ" application-key="akqd0dp3hr9wz4eu70zd1rsab" play="1" qs="1" asset-base="/Securitycam/"></matterport-viewer></body></html>
+<!doctype html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Ark Camera ID</title><script>(function () {
+      var base =
+        (location.hostname.endsWith('github.io') &&
+         location.pathname.startsWith('/Securitycam/'))
+          ? '/Securitycam/'
+          : '/';
+
+      // Used by the Matterport webcomponent before it boots
+      window.MP_SDK_CONFIG = { assetBase: base };
+
+      // Also set the attribute on the element once it's in the DOM
+      document.addEventListener('DOMContentLoaded', function () {
+        var el = document.querySelector('matterport-viewer');
+        if (el) el.setAttribute('asset-base', base);
+      });
+    })();</script><style>body { margin: 0; }
+    matterport-viewer { width: 100vw; height: 100vh; display: block; }</style><script defer="defer" src="./index_bundle.eb75949c2eade8d5f6da.js"></script></head><body><matterport-viewer m="1ghABoaBFPZ" application-key="akqd0dp3hr9wz4eu70zd1rsab" play="1" qs="1"></matterport-viewer></body></html>
