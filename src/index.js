@@ -10,14 +10,18 @@ const PANEL_TITLE = 'Ark Camera Controls';
 
 /* ========================= Tunables ========================= */
 const PERF = {
-  // Projector grid resolution (lower = faster).
-  U: 14, V: 9,                // ~40% less work than 20x12
-  // Update rates
-  PROJECTOR_MIN_DT: 120,      // ms between projector solves
-  OUTDOOR_MIN_DT: 140,        // ms for outdoor rigs
-  // Camera pose change thresholds required to recompute
-  MIN_MOVE: 0.06,             // meters
-  MIN_YAW_DEG: 1.0,           // degrees
+  // projector grid sizes (lower = faster)
+  INDOOR_GRID:  { u: 10, v: 6 },
+  OUTDOOR_GRID: { u: 10, v: 6 },
+
+  // how often dynamic projectors (cafeteria + Admin Office) recompute
+  dynamicHz: 8,
+
+  // keep your existing thresholds if you were using them
+  PROJECTOR_MIN_DT: 120,
+  OUTDOOR_MIN_DT: 140,
+  MIN_MOVE: 0.06,
+  MIN_YAW_DEG: 1.0,
 };
 const clamp = (v,min,max)=>Math.max(min,Math.min(max,v));
 
@@ -297,7 +301,9 @@ function makeFovOnlyRig(THREE, sceneObject, cfg, color) {
   tilt.add(frustum);
 
   // projector mesh
-  const u = PERF.U, v = PERF.V, tris = (u-1)*(v-1)*2;
+  // projector mesh
+  const u = PERF.OUTDOOR_GRID.u, v = PERF.OUTDOOR_GRID.v;
+  const tris = (u-1)*(v-1)*2;
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(tris*9), 3));
   const mat = new THREE.MeshBasicMaterial({
@@ -449,16 +455,16 @@ const main = async () => {
   applyTilt();
 
   // indoor projector
-  const projector = {
-    u: CFG.projectorGrid.u, v: CFG.projectorGrid.v,
-    geom: new THREE.BufferGeometry(),
-    mat:  new THREE.MeshBasicMaterial({
-      color: CFG.fovColor, transparent: true, opacity: CFG.footprintOpacity,
-      side: THREE.DoubleSide, depthTest: true, depthWrite: false,
-      polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
-    }),
-    mesh: null,
-  };
+const projector = {
+  u: PERF.INDOOR_GRID.u, v: PERF.INDOOR_GRID.v,
+  geom: new THREE.BufferGeometry(),
+  mat:  new THREE.MeshBasicMaterial({
+    color: CFG.fovColor, transparent: true, opacity: CFG.footprintOpacity,
+    side: THREE.DoubleSide, depthTest: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+  }),
+  mesh: null,
+};
   (function initProjector(){
     const tris  = (projector.u-1)*(projector.v-1)*2;
     projector.geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(tris*9), 3));
