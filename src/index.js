@@ -3,6 +3,8 @@
 /* public path: github.io uses /Securitycam/, custom domain uses / */
 __webpack_public_path__ = (location.hostname.endsWith('github.io') ? '/Securitycam/' : '/');
 
+   const ASSET_BASE = location.hostname.endsWith('github.io') ? '/Securitycam/' : '/';
+
 // Import the viewer web component
 import '@matterport/webcomponent';
 
@@ -424,7 +426,8 @@ window._makePanel = makePanel;
 /* ============================ Main ============================ */
 const main = async () => {
   const viewer = document.querySelector('matterport-viewer');
-  if (viewer) viewer.setAttribute('asset-base', '/Securitycam/');
+  if (viewer) viewer.setAttribute('asset-base', ASSET_BASE);
+  window.MP_SDK_CONFIG = { assetBase: ASSET_BASE };
 
   const mpSdk = await viewer.playingPromise;
   const THREE = window.THREE;
