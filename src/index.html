@@ -1,41 +1,35 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ark Camera ID</title>
 
-  <!-- Decide asset base for GitHub Project Pages (/Securitycam/) vs custom domain (/) -->
+  <!-- Pick the right asset base for both domains -->
   <script>
-    (function () {
-      var base =
-        (location.hostname.endsWith('github.io') &&
-         location.pathname.startsWith('/Securitycam/'))
-          ? '/Securitycam/'
-          : '/';
-
-      // Used by the Matterport webcomponent before it boots
-      window.MP_SDK_CONFIG = { assetBase: base };
-
-      // Also set the attribute on the element once it's in the DOM
-      document.addEventListener('DOMContentLoaded', function () {
-        var el = document.querySelector('matterport-viewer');
-        if (el) el.setAttribute('asset-base', base);
-      });
-    })();
+    const __ASSET_BASE__ = location.hostname.endsWith('github.io') ? '/Securitycam/' : '/';
+    // Showcase also reads this global:
+    window.MP_SDK_CONFIG = { assetBase: __ASSET_BASE__ };
   </script>
 
   <style>
-    body { margin: 0; }
+    html, body { height: 100%; margin: 0; }
     matterport-viewer { width: 100vw; height: 100vh; display: block; }
   </style>
 </head>
 <body>
   <matterport-viewer
-    m="1ghABoaBFPZ"
-    application-key="akqd0dp3hr9wz4eu70zd1rsab"
+    id="mpv"
+    m="1GhA8oaBFPZ"
+    application-key="akqdQdp3hr9wz4eu70zd1rsab"
     play="1"
     qs="1">
   </matterport-viewer>
+
+  <!-- Apply the computed asset base to the element -->
+  <script>
+    document.getElementById('mpv').setAttribute('asset-base', __ASSET_BASE__);
+  </script>
+  <!-- HtmlWebpackPlugin will inject the bundle with defer -->
 </body>
 </html>
