@@ -1,3 +1,6 @@
+// index.js - Ark Camera ID (optimized + Admin Office defaults)
+
+// Import the viewer web component
 import '@matterport/webcomponent';
 
 /* ========================= Branding ========================= */
@@ -5,9 +8,22 @@ document.title = 'Ark Camera ID';
 const BRAND_NAME  = 'ARK Security';
 const PANEL_TITLE = 'Ark Camera Controls';
 
+/* ========================= Tunables ========================= */
+const PERF = {
+  // Projector grid resolution (lower = faster).
+  U: 14, V: 9,                // ~40% less work than 20x12
+  // Update rates
+  PROJECTOR_MIN_DT: 120,      // ms between projector solves
+  OUTDOOR_MIN_DT: 140,        // ms for outdoor rigs
+  // Camera pose change thresholds required to recompute
+  MIN_MOVE: 0.06,             // meters
+  MIN_YAW_DEG: 1.0,           // degrees
+};
+const clamp = (v,min,max)=>Math.max(min,Math.min(max,v));
+
 /* ========================= Config ========================= */
 const CFG = {
-  // Cafeteria cam position & optics (indoor stylized)
+  // Cafeteria cam position & optics (indoor)
   position: { x: 45.259, y: 4.0, z: -9.45 },
 
   aspect: 16 / 9,
@@ -16,7 +32,7 @@ const CFG = {
   far: 19,
   nearApertureScale: 0.22,
 
-  // Indoor sweep motion (cafeteria & admin office)
+  // Cafeteria sweep motion (indoor only)
   sweepDeg: 122,
   baseYawDeg: 93,
   tiltDeg: 10,
@@ -31,7 +47,7 @@ const CFG = {
   // Projector (indoor fallback floor)
   floorY: 0.4,
   footprintOpacity: 0.18,
-  projectorGrid: { u: 20, v: 12 },
+  projectorGrid: { u: PERF.U, v: PERF.V },
 
   // Stylized body colors
   camText: '#f59e0b',
@@ -39,54 +55,24 @@ const CFG = {
   cableBlack: 0x111111,
 };
 
-const DEBUG = true;
+const DEBUG = false;
 
 /* ===== Cafeteria gating ===== */
-const BOUND_ROOM_ID   = 'cdz3fkt38kae7tapstpt0eaeb';
-const USE_SWEEP_GATE  = true;
-const USE_ROOM_GATE   = true;
+const BOUND_ROOM_ID = 'cdz3fkt38kae7tapstpt0eaeb';
+const USE_SWEEP_GATE = true;
+const USE_ROOM_GATE  = true;
 const SHOW_IN_FLOORPLAN = true;
 
 /* ===== Outdoor tag labels look like “Security Camera …” ===== */
 const OUTDOOR_TAG_MATCH = /^\s*security\s*camera\b/i;
 
-/* ===== Special label (admin office pans like indoor) ===== */
+/* ===== Admin Office defaults (pan within its room) ===== */
 const ADMIN_LABEL = 'Security Camera - Admin Office';
-
-/* =================== Outdoor presets (your values) =================== */
-// Fill in numeric values for each camera:
-//   hFovDeg (°), near (m), far (m), yawDeg (°), tiltDeg (°)
-const CAM_PRESETS = {
-  byLabel: {
-    "Security Camera 1600 BLDG - Near Room 16-006": {
-      hFovDeg: 35, near: 0.03, far: 15, yawDeg: -167, tiltDeg: 13,
-    },
-    "Security Camera - 2-017 Outside": {
-      hFovDeg: 27, near: 0.12, far: 18, yawDeg: 11, tiltDeg: 13,
-    },
-    "Security Camera 1600 BLDG - Near Room 16-003": {
-      hFovDeg: 32, near: 0.03, far: 22, yawDeg: 126, tiltDeg: 10,
-    },
-    "Security Camera - 1500 BLDG - near room 15-005": {
-      hFovDeg: 19, near: 0.12, far: 20, yawDeg: -96, tiltDeg: 7,
-    },
-    "Security Camera 1600 BLDG - Near Room 16-008": {
-      hFovDeg: 30, near: 0.09, far: 21, yawDeg: -12, tiltDeg: 12,
-    },
-    "Security Camera 1600 BLDG - Near Room 16-014": {
-      hFovDeg: 29, near: 0.05, far: 20, yawDeg: 8, tiltDeg: 12,
-    },
-    "Security Camera 1600 BLDG - Near Room 16-009": {
-      hFovDeg: 26, near: 0.05, far: 22, yawDeg: 171, tiltDeg: 12,
-    },
-    "Security Camera - 200 BLDG - Near Room 2017": {
-      hFovDeg: 21, near: 0.04, far: 22, yawDeg: -96, tiltDeg: 11,
-    },
-    "Security Camera 1500 BLDG - Near Room 15-006": {
-      hFovDeg: 31, near: 0.12, far: 22, yawDeg: -78, tiltDeg: 10,
-    },
-  },
-  defaultOutdoor: { hFovDeg: 32, near: 0.12, far: 22, yawDeg: 0, tiltDeg: 10 },
+const ADMIN_DEFAULTS = {
+  // From your screenshot
+  hFovDeg: 36, near: 0.12, far: 6,
+  yawDeg: -130, tiltDeg: 14,
+  sweepDeg: 46, yawSpeedDeg: 22,
 };
 
 /* ================= Infrastructure ================= */
@@ -102,7 +88,6 @@ function frustumDims(THREE, hFovDeg, aspect, dist) {
   const v = 2 * Math.atan(Math.tan(h / 2) / aspect);
   return { halfW: Math.tan(h / 2) * dist, halfH: Math.tan(v / 2) * dist, dist };
 }
-
 function tubeBetween(THREE, a, b, radius, material) {
   const dir = new THREE.Vector3().subVectors(b, a);
   const len = dir.length();
@@ -114,7 +99,6 @@ function tubeBetween(THREE, a, b, radius, material) {
   mesh.position.copy(a).addScaledVector(dir, 0.5);
   return mesh;
 }
-
 function buildTruncatedFrustum(THREE, cfg) {
   const near = Math.max(0.01, cfg.near);
   const far  = Math.max(near + 0.01, cfg.far);
@@ -126,7 +110,7 @@ function buildTruncatedFrustum(THREE, cfg) {
   const group = new THREE.Group();
 
   const n0 = new THREE.Vector3(-nHalfW, -nHalfH, -near);
-  const n1 = new THREE.Vector3 ? new THREE.Vector3( nHalfW, -nHalfH, -near) : new THREE.Vector3( nHalfW, -nHalfH, -near);
+  const n1 = new THREE.Vector3( nHalfW, -nHalfH, -near);
   const n2 = new THREE.Vector3( nHalfW,  nHalfH, -near);
   const n3 = new THREE.Vector3(-nHalfW,  nHalfH, -near);
 
@@ -161,21 +145,19 @@ function buildTruncatedFrustum(THREE, cfg) {
   group.add(tubeBetween(THREE, f2, f3, (cfg.baseEdgeRadius || 0.010), edgeMat));
   group.add(tubeBetween(THREE, f3, f0, (cfg.baseEdgeRadius || 0.010), edgeMat));
 
-  // faces
+  // faces (single BufferGeometry to keep it cheap)
   const pos = [];
   const quads = [[n0,n1,f1,f0],[n1,n2,f2,f1],[n2,n3,f3,f2],[n3,n0,f0,f3]];
-  for (var i=0;i<quads.length;i++){
-    const q = quads[i], a=q[0], b=q[1], c=q[2], d=q[3];
+  for (let i=0;i<quads.length;i++){
+    const [a,b,c,d] = quads[i];
     pos.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z);
     pos.push(a.x,a.y,a.z, c.x,c.y,c.z, d.x,d.y,d.z);
   }
-  // near cap
   pos.push(n0.x,n0.y,n0.z, n1.x,n1.y,n1.z, n2.x,n2.y,n2.z);
   pos.push(n0.x,n0.y,n0.z, n2.x,n2.y,n2.z, n3.x,n3.y,n3.z);
 
   const faces = new THREE.BufferGeometry();
   faces.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  faces.computeVertexNormals();
   const fillMat = new THREE.MeshBasicMaterial({
     color: (cfg.fovColor != null ? cfg.fovColor : 0x00ff00),
     transparent: true,
@@ -208,7 +190,6 @@ function makeSideDecalTexture(THREE) {
   const tex = new THREE.CanvasTexture(c); tex.anisotropy = 8; tex.needsUpdate = true;
   return tex;
 }
-
 function buildStylizedCamera(THREE) {
   const g = new THREE.Group();
   const L = 0.44, wBack = 0.26, hBack = 0.16, wFront = 0.20, hFront = 0.13;
@@ -218,7 +199,7 @@ function buildStylizedCamera(THREE) {
     geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array([
       a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z, a.x,a.y,a.z, c.x,c.y,c.z, d.x,d.y,d.z
     ]),3));
-    geom.computeVertexNormals(); return new THREE.Mesh(geom, mat);
+    return new THREE.Mesh(geom, mat);
   };
   const mWhite = new THREE.MeshLambertMaterial({ color: 0xeeeeee });
   const mBlue  = new THREE.MeshLambertMaterial({ color: 0xbfe6f0 });
@@ -246,7 +227,7 @@ function buildStylizedCamera(THREE) {
       a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z, a.x,a.y,a.z, c.x,c.y,c.z, d.x,d.y,d.z
     ]),3));
     geom.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array([0,1, 0,0, 1,0, 0,1, 1,0, 1,1]),2));
-    geom.computeVertexNormals(); g.add(new THREE.Mesh(geom, mDecal));
+    g.add(new THREE.Mesh(geom, mDecal));
   }
 
   // details
@@ -299,10 +280,10 @@ function buildStylizedCamera(THREE) {
   return g;
 }
 
-/* =========== FOV-only rig (outdoor & admin) =========== */
+/* =========== FOV-only rig (for outdoor cameras) =========== */
 function makeFovOnlyRig(THREE, sceneObject, cfg, color) {
   const node = sceneObject.addNode();
-  node.obj3D.visible = true;
+  node.obj3D.visible = true; // outdoor visible by default (we'll gate Admin by room later)
 
   const pan = new THREE.Object3D();
   const tilt = new THREE.Object3D();
@@ -316,7 +297,7 @@ function makeFovOnlyRig(THREE, sceneObject, cfg, color) {
   tilt.add(frustum);
 
   // projector mesh
-  const u = 20, v = 12, tris = (u-1)*(v-1)*2;
+  const u = PERF.U, v = PERF.V, tris = (u-1)*(v-1)*2;
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(tris*9), 3));
   const mat = new THREE.MeshBasicMaterial({
@@ -338,8 +319,7 @@ function makeFovOnlyRig(THREE, sceneObject, cfg, color) {
 
 /* ============================= UI ============================= */
 function makePanel(selectedId) {
-  var old = document.getElementById('fov-panel');
-  if (old) old.remove();
+  const old = document.getElementById('fov-panel'); if (old) old.remove();
 
   const wrap = document.createElement('div');
   wrap.id = 'fov-panel';
@@ -387,7 +367,7 @@ function makePanel(selectedId) {
         b.style.cssText='background:#14b8a6;border:none;color:#001;font-weight:800;border-radius:10px;padding:8px 10px;cursor:pointer;';
         b.onclick=(e)=>{
           e.preventDefault();
-          const v = Math.max(min, Math.min(max, +(get()+delta).toFixed(decimals)));
+          const v = clamp(+((get()+delta).toFixed(decimals)), min, max);
           set(v);
           val.textContent = get().toFixed(decimals) + unit;
         };
@@ -401,15 +381,18 @@ function makePanel(selectedId) {
     // shared optics
     row('HFOV',  ()=>cfg.hFovDeg, v=>{cfg.hFovDeg=v; rig.rebuild();}, 1,'°',10,120);
     row('NEAR',  ()=>cfg.near,    v=>{cfg.near=v;    rig.rebuild();}, 0.01,'',0.02,1,2);
-    row('FAR',   ()=>cfg.far,     v=>{cfg.far=v;     rig.rebuild();}, 1,'',5,120);
+    row('FAR',   ()=>cfg.far,     v=>{cfg.far=v;     rig.rebuild();}, 1,'',2,120);
 
-    if (rig.type === 'indoor' || rig.type === 'admin') {
-      row('SWEEP', ()=>rig.sweep.sweepDeg, v=>{rig.sweep.sweepDeg=v;}, 2,'°',10,170);
-      row('YawSpd',()=>rig.sweep.yawSpeedDeg, v=>{rig.sweep.yawSpeedDeg=v;}, 1,'°/s',1,60);
-      row('YAW',   ()=>rig.sweep.baseYawDeg, v=>{rig.sweep.baseYawDeg=v;}, 1,'°',-180,180);
-      row('TILT',  ()=>cfg.tiltDeg,          v=>{cfg.tiltDeg=v; rig.applyTilt();}, 1,'°',0,85);
+    if (rig.type === 'indoor' || rig.type === 'admin-pan') {
+      // panning rigs
+      row('SWEEP', ()=>cfg.sweepDeg,   v=>{cfg.sweepDeg=v;}, 2,'°',4,170);
+      row('YawSpd',()=>cfg.yawSpeedDeg||10, v=>{cfg.yawSpeedDeg=v;}, 1,'°/s',1,60);
+      row('YAW',   ()=>cfg.baseYawDeg ?? cfg.yawDeg ?? 0,
+                  v=>{ if('baseYawDeg'in cfg) cfg.baseYawDeg=v; else {cfg.yawDeg=v; rig.refs.pan.rotation.y=deg2rad(v);} },
+                  1,'°',-180,180);
+      row('TILT',  ()=>cfg.tiltDeg||10,  v=>{cfg.tiltDeg=v; rig.applyTilt();}, 1,'°',0,85);
     } else {
-      // Outdoor: fixed position (no auto-pan), but aim with YAW/TILT
+      // Outdoor fixed rigs
       row('YAW',   ()=>cfg.yawDeg || 0,  v=>{ cfg.yawDeg=v; rig.refs.pan.rotation.y = deg2rad(v); }, 1,'°',-180,180);
       row('TILT',  ()=>cfg.tiltDeg||10,  v=>{ cfg.tiltDeg=v; rig.applyTilt(); }, 1,'°',0,85);
     }
@@ -439,8 +422,7 @@ const main = async () => {
 
   await mpSdk.Mode.moveTo(mpSdk.Mode.Mode.INSIDE);
 
-  const sceneObjs = await mpSdk.Scene.createObjects(1);
-  const sceneObject = sceneObjs[0];
+  const [sceneObject] = await mpSdk.Scene.createObjects(1);
 
   const rootNode = sceneObject.addNode();
   rootNode.obj3D.visible = false;
@@ -485,23 +467,23 @@ const main = async () => {
   })();
 
   // register cafeteria rig
-  const cafeteriaCfg = { hFovDeg: CFG.hFovDeg, near: CFG.near, far: CFG.far, tiltDeg: CFG.tiltDeg, maxDistanceM: 25 };
+  const cafeteriaCfg = { hFovDeg: CFG.hFovDeg, near: CFG.near, far: CFG.far, maxDistanceM: 25,
+                         sweepDeg: CFG.sweepDeg, baseYawDeg: CFG.baseYawDeg, yawSpeedDeg: CFG.yawSpeedDeg, tiltDeg: CFG.tiltDeg };
   registerRig({
     id: 'cafeteria',
     label: 'Ark Cafeteria Cam',
     type: 'indoor',
     cfg: cafeteriaCfg,
-    refs: { panPivot, tiltPivot, frustum: () => frustumGroup },
-    sweep: { sweepDeg: CFG.sweepDeg, baseYawDeg: CFG.baseYawDeg, yawSpeedDeg: CFG.yawSpeedDeg },
+    refs: { panPivot, tiltPivot, pan: panPivot, frustum: () => frustumGroup },
     rebuild: () => {
       tiltPivot.remove(frustumGroup);
       if (frustumGroup && frustumGroup.traverse) {
-        frustumGroup.traverse(o => { if (o.geometry && o.geometry.dispose) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
+        frustumGroup.traverse(o => { o.geometry && o.geometry.dispose && o.geometry.dispose(); o.material && o.material.dispose && o.material.dispose(); });
       }
-      CFG.hFovDeg = cafeteriaCfg.hFovDeg; CFG.near = cafeteriaCfg.near; CFG.far = cafeteriaCfg.far;
+      Object.assign(CFG, { hFovDeg: cafeteriaCfg.hFovDeg, near: cafeteriaCfg.near, far: cafeteriaCfg.far });
       frustumGroup = buildTruncatedFrustum(THREE, CFG);
       tiltPivot.add(frustumGroup);
-      updateVisibility();
+      updateVisibility(true);
     },
     applyTilt: () => applyTilt(),
   });
@@ -510,7 +492,28 @@ const main = async () => {
   rootNode.start();
   makePanel('cafeteria');
 
-  /* -------- Outdoor & Admin rigs from Mattertags -------- */
+  /* -------- Outdoor rigs from Mattertags -------- */
+
+  // Admin Office: we'll detect by label and convert this rig to "admin-pan"
+  // All others are "outdoor" fixed rigs with presets applied by label.
+
+  // Your supplied presets for outdoor cams (except Admin)
+  const CAM_PRESETS = {
+    byLabel: {
+      "Security Camera 1600 BLDG - Near Room 16-006": { hFovDeg: 35, near: 0.03, far: 15, yawDeg: -167, tiltDeg: 13 },
+      "Security Camera - 2-017 Outside":               { hFovDeg: 27, near: 0.12, far: 18, yawDeg: 11,   tiltDeg: 13 },
+      "Security Camera 1600 BLDG - Near Room 16-003":  { hFovDeg: 32, near: 0.03, far: 22, yawDeg: 126,  tiltDeg: 10 },
+      "Security Camera - 1500 BLDG - near room 15-005":{ hFovDeg: 19, near: 0.12, far: 20, yawDeg: -96,  tiltDeg: 7  },
+      "Security Camera 1600 BLDG - Near Room 16-008":  { hFovDeg: 30, near: 0.09, far: 21, yawDeg: -12,  tiltDeg: 12 },
+      "Security Camera 1600 BLDG - Near Room 16-014":  { hFovDeg: 29, near: 0.05, far: 20, yawDeg: 8,    tiltDeg: 12 },
+      "Security Camera 1600 BLDG - Near Room 16-009":  { hFovDeg: 26, near: 0.05, far: 22, yawDeg: 171,  tiltDeg: 12 },
+      "Security Camera - 200 BLDG - Near Room 2017":   { hFovDeg: 21, near: 0.04, far: 22, yawDeg: -96,  tiltDeg: 11 },
+      "Security Camera 1500 BLDG - Near Room 15-006":  { hFovDeg: 31, near: 0.12, far: 22, yawDeg: -78,  tiltDeg: 10 },
+      // Admin Office handled separately
+    },
+    defaultOutdoor: { hFovDeg: 32, near: 0.12, far: 22, yawDeg: 0, tiltDeg: 10 },
+  };
+
   function pickNum(text, re, d) {
     const m = text && text.match ? text.match(re) : null;
     return m ? parseFloat(m[1]) : d;
@@ -526,25 +529,9 @@ const main = async () => {
       far:      pickNum(txt, /\bfar\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 22),
       yawDeg:   pickNum(txt, /\byaw\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 0),
       tiltDeg:  pickNum(txt, /\btilt\s*[:=]\s*(-?\d+(?:\.\d+)?)/i, 10),
+      maxDistanceM: 9999, // outdoor: always visible (no max distance gate)
       aspect: 16/9,
     };
-  }
-  function applyPreset(label, cfg) {
-    const p = CAM_PRESETS.byLabel[label] || null;
-    const base = CAM_PRESETS.defaultOutdoor;
-    if (!cfg.hFovDeg) cfg.hFovDeg = base.hFovDeg;
-    if (!cfg.near && cfg.near !== 0) cfg.near = base.near;
-    if (!cfg.far && cfg.far !== 0) cfg.far = base.far;
-    if (!cfg.yawDeg && cfg.yawDeg !== 0) cfg.yawDeg = base.yawDeg;
-    if (!cfg.tiltDeg && cfg.tiltDeg !== 0) cfg.tiltDeg = base.tiltDeg;
-    if (p) {
-      if (typeof p.hFovDeg === 'number') cfg.hFovDeg = p.hFovDeg;
-      if (typeof p.near    === 'number') cfg.near    = p.near;
-      if (typeof p.far     === 'number') cfg.far     = p.far;
-      if (typeof p.yawDeg  === 'number') cfg.yawDeg  = p.yawDeg;
-      if (typeof p.tiltDeg === 'number') cfg.tiltDeg = p.tiltDeg;
-    }
-    return cfg;
   }
 
   async function getTagsWithTimeout(ms) {
@@ -558,8 +545,8 @@ const main = async () => {
               if (Array.isArray(tags)) arr = tags;
               else if (tags && typeof tags.toArray === 'function') arr = tags.toArray();
               else if (tags) arr = Object.values(tags);
-              if (arr) { if (unsub) unsub(); resolve(arr); }
-            } catch (e) { if (unsub) unsub(); resolve([]); }
+              if (arr) { unsub && unsub(); resolve(arr); }
+            } catch (e) { unsub && unsub(); resolve([]); }
           });
         });
         const timeout = new Promise(resolve => setTimeout(() => resolve(null), ms));
@@ -582,106 +569,112 @@ const main = async () => {
     } catch { rig.groundY = 0.0; }
   }
 
-  async function spawnFromTags() {
+  const outdoorEntries = [];   // keep for updates / throttling
+  const adminEntries   = [];   // panning outdoor rigs (Admin)
+
+  function applyLabelPreset(label, cfg) {
+    const p = CAM_PRESETS.byLabel[label];
+    if (p) Object.assign(cfg, p);
+    else Object.assign(cfg, CAM_PRESETS.defaultOutdoor);
+  }
+
+  async function spawnOutdoorCamsFromTags() {
     const tags = await getTagsWithTimeout();
     const camTags = tags.filter(t => OUTDOOR_TAG_MATCH.test(t.label || ''));
     for (let i=0;i<camTags.length;i++) {
       const t = camTags[i];
+      const isAdmin = (t.label === ADMIN_LABEL);
       const baseCfg = parseOutdoorCfgFromTag(t);
-      applyPreset(t.label || '', baseCfg);
 
-      // ADMIN OFFICE: pan like indoor, LOS confined, not shown in floorplan
-      if ((t.label || '') === ADMIN_LABEL) {
-        const rig = makeFovOnlyRig(THREE, sceneObject, baseCfg, CFG.fovColor);
-        await initOutdoorGround(rig);
-        rig.node.start();
+      if (isAdmin) { Object.assign(baseCfg, ADMIN_DEFAULTS); }
+      else { applyLabelPreset(t.label, baseCfg); }
 
-        const id = t.sid || 'admin-office';
-        const label = ADMIN_LABEL;
-
-        const sweep = { sweepDeg: 100, baseYawDeg: baseCfg.yawDeg || 0, yawSpeedDeg: 12 };
-        registerRig({
-          id, label, type:'admin', cfg: baseCfg,
-          refs: { node: rig.node, pan: rig.pan, tilt: rig.tilt, frustum: () => rig.frustum, projector: rig.projector,
-                  projectorU: rig.projectorU, projectorV: rig.projectorV },
-          sweep,
-          rebuild: () => {
-            const parent = rig.tilt;
-            parent.remove(rig.frustum);
-            if (rig.frustum && rig.frustum.traverse) {
-              rig.frustum.traverse(o => { if (o.geometry && o.geometry.dispose) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
-            }
-            rig.frustum = buildTruncatedFrustum(THREE, { ...CFG, ...baseCfg });
-            parent.add(rig.frustum);
-          },
-          applyTilt: () => { rig.tilt.rotation.x = -deg2rad(baseCfg.tiltDeg || 10); },
-        });
-
-        // add to UI
-        try {
-          const pick = document.querySelector('#fov-panel select');
-          if (pick) {
-            var exists = false;
-            for (var j=0;j<pick.options.length;j++) if (pick.options[j].value === id) { exists = true; break; }
-            if (!exists) { const o = document.createElement('option'); o.value = id; o.textContent = label; pick.appendChild(o); }
-          }
-        } catch (e) {}
-
-        continue;
-      }
-
-      // Regular OUTDOOR (fixed)
       const rig = makeFovOnlyRig(THREE, sceneObject, baseCfg, CFG.fovColor);
       await initOutdoorGround(rig);
       rig.node.start();
 
-      const id = t.sid || ('out-' + (i+1));
-      const label = t.label || ('Outdoor ' + (i+1));
+      // try to capture the tag's room id if present in any common property
+      const roomId = t.roomId || t.room || t.anchorRoom || (t.roomInfo && t.roomInfo.id) || null;
 
-      registerRig({
-        id, label, type:'outdoor', cfg: baseCfg,
+      const id = (t.sid || ('out-' + (i+1)));
+      const label = (t.label || ('Outdoor ' + (i+1)));
+
+      const entry = {
+        id, label,
+        type: isAdmin ? 'admin-pan' : 'outdoor',
+        cfg: baseCfg,
         refs: {
           node: rig.node, pan: rig.pan, tilt: rig.tilt,
           frustum: () => rig.frustum,
           projector: rig.projector,
           projectorU: rig.projectorU, projectorV: rig.projectorV,
+          get groundY(){ return rig.groundY; },
         },
+        roomId: roomId,
         rebuild: () => {
           const parent = rig.tilt;
           parent.remove(rig.frustum);
           if (rig.frustum && rig.frustum.traverse) {
-            rig.frustum.traverse(o => { if (o.geometry && o.geometry.dispose) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
+            rig.frustum.traverse(o => { o.geometry && o.geometry.dispose && o.geometry.dispose(); o.material && o.material.dispose && o.material.dispose(); });
           }
           rig.frustum = buildTruncatedFrustum(THREE, { ...CFG, ...baseCfg });
           parent.add(rig.frustum);
         },
         applyTilt: () => { rig.tilt.rotation.x = -deg2rad(baseCfg.tiltDeg || 10); },
-      });
+      };
+
+      registerRig(entry);
+      if (isAdmin) adminEntries.push(entry); else outdoorEntries.push(entry);
 
       // add to UI
       try {
         const pick = document.querySelector('#fov-panel select');
         if (pick) {
-          var exists = false;
-          for (var j=0;j<pick.options.length;j++) if (pick.options[j].value === id) { exists = true; break; }
-          if (!exists) { const o = document.createElement('option'); o.value = id; o.textContent = label; pick.appendChild(o); }
+          let exists = false;
+          for (let j=0;j<pick.options.length;j++) if (pick.options[j].value === id) { exists = true; break; }
+          if (!exists) {
+            const o = document.createElement('option');
+            o.value = id; o.textContent = label;
+            pick.appendChild(o);
+          }
         }
       } catch (e) {}
     }
-    log('Spawned outdoor/admin rigs:', rigs.size);
+    log('Spawned outdoor rigs:', outdoorEntries.length, 'admin(pan):', adminEntries.length);
   }
-  spawnFromTags().catch(e => console.warn('[SECAM] spawn error', e));
+  spawnOutdoorCamsFromTags().catch(e => console.warn('[SECAM] outdoor spawn error', e));
 
-  /* --------------- Visibility + projectors --------------- */
+  /* --------------- Visibility + projectors (throttled) --------------- */
   const viewerPos = new THREE.Vector3();
+  let lastPose = { p: new THREE.Vector3(0,0,0), t: performance.now(), yawRad: 0 };
+  function poseChangedEnough(p) {
+    const moved = p.position && Math.hypot(p.position.x - lastPose.p.x, p.position.y - lastPose.p.y, p.position.z - lastPose.p.z) > PERF.MIN_MOVE;
+    // estimate yaw from forward (z axis of camera in world). If not provided, rely on movement.
+    let yawChanged = false;
+    try {
+      if (p.rotation && Array.isArray(p.rotation)) {
+        const yaw = p.rotation[1]; // best effort (SDK uses [x,y,z,w]? varies)
+        if (typeof yaw === 'number') {
+          const deg = Math.abs((yaw - lastPose.yawRad) * 180/Math.PI);
+          yawChanged = deg > PERF.MIN_YAW_DEG;
+        }
+      }
+    } catch {}
+    return moved || yawChanged;
+  }
   mpSdk.Camera.pose.subscribe(p => {
     viewerPos.set(p.position.x, p.position.y, p.position.z);
+    if (poseChangedEnough(p)) {
+      lastPose.p.set(p.position.x, p.position.y, p.position.z);
+      if (p.rotation && Array.isArray(p.rotation)) lastPose.yawRad = p.rotation[1];
+      updateVisibility(false, true); // fast path
+    }
   });
 
   let mode = mpSdk.Mode.Mode.INSIDE;
-  mpSdk.Mode.current.subscribe(m => { mode = m; updateVisibility(); });
+  mpSdk.Mode.current.subscribe(m => { mode = m; updateVisibility(true); });
 
-  // Room.current (for cafeteria gating)
+  // Room.current (for cafeteria gating + Admin Office gating)
   let currentRooms = new Set();
   mpSdk.Room.current.subscribe((payload) => {
     try {
@@ -690,16 +683,14 @@ const main = async () => {
       else if (payload && typeof payload[Symbol.iterator] === 'function') list = Array.from(payload);
       else if (payload && Array.isArray(payload.ids)) list = payload.ids;
       currentRooms = new Set(list);
-      updateVisibility();
-    } catch (err) {
-      console.warn('[SECAM] Room.current handler error', err);
-    }
+      updateVisibility(true);
+    } catch (err) {}
   });
 
   let currentSweepRoomId = null;
   mpSdk.Sweep.current.subscribe((sw) => {
     currentSweepRoomId = (sw && sw.roomInfo ? sw.roomInfo.id : null);
-    updateVisibility();
+    updateVisibility(true);
   });
 
   async function raycastFirst(origin, direction, maxDist) {
@@ -715,8 +706,8 @@ const main = async () => {
     return null;
   }
 
-  async function updateVisibility() {
-    // Cafeteria: Floorplan allowed
+  async function updateVisibility(force=false) {
+    // Floorplan always allowed for cafeteria rig
     if (mode === mpSdk.Mode.Mode.FLOORPLAN && SHOW_IN_FLOORPLAN) {
       rootNode.obj3D.visible = true;
     } else {
@@ -727,57 +718,25 @@ const main = async () => {
       } else if (USE_ROOM_GATE) {
         inTargetRoom = currentRooms.has(BOUND_ROOM_ID);
       }
-      if (!inTargetRoom) { rootNode.obj3D.visible = false; }
-      else {
-        // distance + LOS
-        const camPos = rootNode.obj3D.getWorldPosition(new THREE.Vector3());
-        const dist = camPos.distanceTo(viewerPos);
-        const maxDist = 25;
-        if (dist > maxDist) { rootNode.obj3D.visible = false; }
-        else {
-          const fr = frustumGroup && frustumGroup.userData ? frustumGroup.userData.farRect : null;
-          if (fr) {
-            const centerLocal = new THREE.Vector3().add(fr[0]).add(fr[1]).add(fr[2]).add(fr[3]).multiplyScalar(0.25);
-            const target = tiltPivot.localToWorld(centerLocal.clone());
-            const dir = new THREE.Vector3().subVectors(target, viewerPos);
-            const len = dir.length();
-            if (len > 0.001) {
-              dir.normalize();
-              const hit = await raycastFirst(viewerPos, dir, len);
-              const hitDist = (hit && typeof hit.distance === 'number') ? hit.distance : Number.POSITIVE_INFINITY;
-              const blocked = (hit && hit.hit) && hitDist < (len - 0.05);
-              rootNode.obj3D.visible = !blocked;
-            } else rootNode.obj3D.visible = false;
-          } else rootNode.obj3D.visible = true;
-        }
+      if (!inTargetRoom) { rootNode.obj3D.visible = false; } else {
+        rootNode.obj3D.visible = true;
       }
     }
 
-    // Admin office: LOS-confined, not in floorplan
-    rigs.forEach(async (entry) => {
-      if (entry.type !== 'admin') return;
-      const refs = entry.refs;
-      if (mode === mpSdk.Mode.Mode.FLOORPLAN) { refs.node.obj3D.visible = false; return; }
-
-      // LOS to far-plane center
-      const frustum = (typeof refs.frustum === 'function') ? refs.frustum() : refs.frustum;
-      const fr = frustum && frustum.userData ? frustum.userData.farRect : null;
-      if (!fr) { refs.node.obj3D.visible = true; return; }
-      const centerLocal = new THREE.Vector3().add(fr[0]).add(fr[1]).add(fr[2]).add(fr[3]).multiplyScalar(0.25);
-      const target = refs.tilt.localToWorld(centerLocal.clone());
-      const dir = new THREE.Vector3().subVectors(target, viewerPos);
-      const len = dir.length();
-      if (len <= 0.001) { refs.node.obj3D.visible = false; return; }
-      dir.normalize();
-      const hit = await raycastFirst(viewerPos, dir, len);
-      if (!hit || !hit.hit) { refs.node.obj3D.visible = true; return; }
-      refs.node.obj3D.visible = (hit.distance >= (len - 0.05));
-    });
+    // Admin Office: confine to its room (if detectable)
+    for (const entry of adminEntries) {
+      if (!entry.roomId) { entry.refs.node.obj3D.visible = true; continue; }
+      const same = currentRooms.has(entry.roomId);
+      entry.refs.node.obj3D.visible = same;
+    }
   }
 
-  // Projector (indoor cafeteria): samples on demand (called in animate)
-  async function updateProjector() {
+  // ---------- Projector updaters (throttled & no normals) ----------
+  let lastIndoorSolve = 0;
+  async function updateProjector(now) {
     if (!rootNode.obj3D.visible) { projector.mesh.visible = false; return; }
+    if (now - lastIndoorSolve < PERF.PROJECTOR_MIN_DT) return;
+    lastIndoorSolve = now;
 
     const nearRect = frustumGroup.userData.nearRect;
     const farRect  = frustumGroup.userData.farRect;
@@ -833,20 +792,25 @@ const main = async () => {
       }
     }
     projector.geom.attributes.position.needsUpdate = true;
-    projector.geom.computeVertexNormals();
   }
 
-  // Outdoor/admin projector: raycast stop; skip missing cells
-  async function updateOutdoorProjector(entry) {
+  // Outdoor projector solve (per entry, throttled)
+  const outdoorSolveState = new Map(); // id -> { last: ms, inFlight: bool }
+  async function updateOutdoorProjector(entry, now) {
     const rig = entry.refs;
     if (!rig || !rig.node || !rig.frustum) return;
     if (!rig.node.obj3D.visible) { if (rig.projector) rig.projector.visible = false; return; }
+
+    const st = outdoorSolveState.get(entry.id) || { last: 0, inFlight: false };
+    if (st.inFlight || (now - st.last) < PERF.OUTDOOR_MIN_DT) return;
+    st.inFlight = true; outdoorSolveState.set(entry.id, st);
+
     const frustum = (typeof rig.frustum === 'function' ? rig.frustum() : rig.frustum);
-    if (!frustum) return;
+    if (!frustum) { st.inFlight=false; return; }
 
     const nearRect = frustum.userData.nearRect;
     const farRect  = frustum.userData.farRect;
-    const u = rig.projectorU || 20, v = rig.projectorV || 12;
+    const u = rig.projectorU || PERF.U, v = rig.projectorV || PERF.V;
 
     const nearGrid = [], farGrid = [];
     for (let yi=0; yi<v; yi++){
@@ -864,7 +828,6 @@ const main = async () => {
 
     const worldPts = new Array(nearGrid.length);
     let filled = 0;
-
     for (let i=0;i<nearGrid.length;i++){
       const nW = rig.tilt.localToWorld(nearGrid[i].clone());
       const fW = rig.tilt.localToWorld(farGrid[i].clone());
@@ -909,56 +872,46 @@ const main = async () => {
     }
     for (let i=k;i<pos.length;i++) pos[i]=0;
 
-    if (k === 0 || filled === 0) {
-      rig.projector.visible = false;
-      geo.attributes.position.needsUpdate = true;
-      return;
-    }
-    rig.projector.visible = true;
+    rig.projector.visible = (k !== 0 && filled !== 0);
     geo.attributes.position.needsUpdate = true;
-    geo.computeVertexNormals();
+
+    st.last = now; st.inFlight = false; outdoorSolveState.set(entry.id, st);
   }
 
-  // animate cafeteria + admin sweep; update projectors
-  let phase = 0, last = performance.now();
-  async function animate(now) {
+  // animate cafeteria sweep + projectors + admin pan
+  let phaseIndoor = 0, last = performance.now();
+  const adminPhase = new Map(); // id -> phase
+  function animate(now) {
     const dt = (now - last)/1000; last = now;
 
     // cafeteria sweep
-    const caf = rigs.get('cafeteria');
-    if (caf && caf.sweep) {
-      const yawCenter = deg2rad(caf.sweep.baseYawDeg);
-      const yawAmp    = deg2rad(caf.sweep.sweepDeg) * 0.5;
-      const yawSpeed  = deg2rad(caf.sweep.yawSpeedDeg);
-      phase += yawSpeed * dt;
-      panPivot.rotation.y = yawCenter + Math.sin(phase) * yawAmp;
+    const yawCenter = deg2rad(cafeteriaCfg.baseYawDeg);
+    const yawAmp    = deg2rad(cafeteriaCfg.sweepDeg) * 0.5;
+    const yawSpeed  = deg2rad(cafeteriaCfg.yawSpeedDeg);
+    phaseIndoor += yawSpeed * dt;
+    panPivot.rotation.y = yawCenter + Math.sin(phaseIndoor) * yawAmp;
+
+    // Admin Office rigs (pan in place, confined by room via visibility)
+    for (const entry of adminEntries) {
+      const cfg = entry.cfg, pan = entry.refs.pan;
+      const center = deg2rad(cfg.yawDeg || 0);
+      const amp    = deg2rad(cfg.sweepDeg || 0) * 0.5;
+      const spd    = deg2rad(cfg.yawSpeedDeg || 10);
+      const ph = (adminPhase.get(entry.id) || 0) + spd * dt;
+      adminPhase.set(entry.id, ph);
+      pan.rotation.y = center + Math.sin(ph) * amp;
     }
 
-    // admin office sweep (if present)
-    rigs.forEach((entry) => {
-      if (entry.type !== 'admin' || !entry.sweep) return;
-      entry._phase = (entry._phase || 0) + deg2rad(entry.sweep.yawSpeedDeg) * dt;
-      const center = deg2rad(entry.sweep.baseYawDeg);
-      const amp = deg2rad(entry.sweep.sweepDeg) * 0.5;
-      entry.refs.pan.rotation.y = center + Math.sin(entry._phase) * amp;
-      // tilt kept from cfg; user can tweak via UI
-    });
-
-    await updateProjector();
-
-    // update all outdoor/admin projectors
-    const tasks = [];
-    rigs.forEach(entry => {
-      if (entry.type === 'outdoor' || entry.type === 'admin') tasks.push(updateOutdoorProjector(entry));
-    });
-    await Promise.allSettled(tasks);
+    // Throttled solves
+    updateProjector(now);
+    for (const entry of outdoorEntries.concat(adminEntries)) updateOutdoorProjector(entry, now);
 
     requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
 
   // first visibility pass
-  updateVisibility();
+  updateVisibility(true);
 };
 
 main().catch(console.error);
